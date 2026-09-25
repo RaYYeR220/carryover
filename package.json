@@ -1,0 +1,20 @@
+{
+  "name": "carryover",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "biome check .",
+    "dev": "pnpm --filter @carryover/server dev"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
