@@ -108,7 +108,9 @@ describe('systemPrompt', () => {
     const s = systemPrompt(fakeView({ callId: 'call-aaaa-1111' }));
     expect(s).toMatch(/never state any personal fact[^.]*unless it is written in the FACT SHEET/i);
     expect(s).not.toMatch(/other party said it first/i);
-    expect(s).toMatch(/never confirm a personal fact/i);
+    expect(s).toContain(
+      'Never confirm a personal fact read to you unless it matches the FACT SHEET; otherwise call ask_user',
+    );
     expect(s).toContain('Is her date of birth June 1st, 1986?');
     expect(s).toMatch(/call ask_user instead of saying yes or no/i);
   });

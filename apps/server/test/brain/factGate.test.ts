@@ -334,3 +334,43 @@ describe('fix round 1: ledger sources (MINOR c)', () => {
     expect(checkSentence('The last four are 2299.', l).ok).toBe(true);
   });
 });
+
+describe('fix round 2: year allowance, 24/7, "a hundred", long separators', () => {
+  const ledger = createLedger(['March 14, 1952', 'Member ID 88-1204-77']);
+  const blocked = [
+    'Her account number ends in 2014.',
+    'Her card ends in 1987.',
+    'The last four of her social are from 2003.',
+    'It ends in twenty fourteen.',
+    'It starts with 1987.',
+    'It ends in 12 45?',
+    'Her member ID is 45 24 7.',
+    'Her ID is forty five twenty four seven.',
+    'It is 1 24 7.',
+    'Her ID is 4 . . . 5 . . . 6 . . . 2.',
+    'Her ID is 45 ....... 12 ....... 99.',
+    'Her ID is 45 - - - - 12 - - - - 99.',
+    'She lives at a hundred and twelve Main Street.',
+  ];
+  for (const s of blocked) {
+    it(`blocks: ${JSON.stringify(s)}`, () => {
+      expect(checkSentence(s, ledger).ok).toBe(false);
+    });
+  }
+  const passes = [
+    'She has been a customer since 2019.',
+    'It costs about a hundred dollars.',
+    'I have called a hundred times.',
+    'There were a thousand people there.',
+    'We offer 24/7 support.',
+    'Do you have twenty four seven support?',
+  ];
+  for (const s of passes) {
+    it(`passes: ${JSON.stringify(s)}`, () => {
+      expect(checkSentence(s, ledger).ok).toBe(true);
+    });
+  }
+  it('still lets the allowed ID through long separators', () => {
+    expect(checkSentence('It is 88 ....... 1204 ....... 77.', ledger).ok).toBe(true);
+  });
+});

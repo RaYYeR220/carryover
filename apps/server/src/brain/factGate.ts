@@ -16,9 +16,17 @@
 //   short punctuation runs join groups into one number.
 // - Names, street names, cities and other words are not gated at all.
 // - Clock times, ordinals ("the 21st"), percentages, prices under $100, "24/7", toll-free
-//   "800 number" phrases and "since 2019"-style years are treated as ordinary speech.
-// - Confirming a wrong value read out by the other party ("Yes, that's right") has no
-//   fact in it; that case is covered by the system prompt, not here.
+//   "800 number" phrases, "about a hundred dollars" and "since 2019"-style years are
+//   treated as ordinary speech (never when the sentence talks about an ID, "ends in",
+//   "last four" or, for years, birth).
+// - The clock-time allowance is decided per sentence: in a sentence with time context
+//   ("?", "works", a weekday ...) and no identifier words, any "H MM"-shaped number
+//   (1-12 and 00-59, e.g. "4 15") passes as a time.
+// - A dash date without a year ("born on 6-1") is not caught; slash forms ("6/1") are.
+// - Spoken lists are joined: "Press 1, then 3, then 2" is read as 132 and blocked unless
+//   allowed. Keying menu choices through the press_keys tool is unaffected.
+// - Echo-confirmation is prompt-only: confirming a wrong value read out by the other
+//   party ("Yes, that's right") contains no fact, so only the system prompt guards it.
 
 export interface ExtractedFact {
   kind: 'digits' | 'date' | 'email';
@@ -208,6 +216,11 @@ function scaled(
   return { value, next };
 }
 
+// Units and quantity nouns: a number right before one of these is an amount, not an ID.
+const UNIT_WORDS =
+  'minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?|seconds?|secs?|mg|mcg|milligrams?|ml|milliliters?|dollars?|bucks|cents?|percent|pills?|tablets?|capsules?|refills?|doses?|times|people|persons|patients|customers|calls|items?|units?|miles?|feet|pounds?|things|ways';
+const QUANTITY_NOUN_AFTER_RE = new RegExp(`^\\s+(?:more\\s+|other\\s+)?(?:${UNIT_WORDS})\\b`, 'i');
+
 const ZERO_WORD_RE =
   /(?<=\d[\s,.-]{0,3})\b(?:oh|o)\b(?![\s']*clock)|\b(?:oh|o)\b(?![\s']*clock)(?=[\s,.-]{1,3}\d)/gi;
 const connector = (words: string) =>
@@ -266,13 +279,19 @@ export function normalizeNumbers(input: string): string {
         continue;
       }
     }
-    // "a hundred and twelve", "a thousand"
+    // "a hundred and twelve", "a thousand". A bare "a hundred" before a unit or quantity
+    // noun ("about a hundred dollars", "a hundred times") is an approximate amount and
+    // stays in words.
     if (
       cur.w === 'a' &&
       nx &&
       (nx.w === 'hundred' || nx.w === 'thousand') &&
       gapIs(text, cur, nx, PHRASE_GAP_RE)
     ) {
+      if (QUANTITY_NOUN_AFTER_RE.test(text.slice(nx.end))) {
+        i += 2;
+        continue;
+      }
       const r = scaled(words, { value: 1, next: i + 1 }, text);
       const last = words[r.next - 1] as Word;
       emit(cur.start, last.end, String(r.value));
@@ -331,7 +350,8 @@ const NUMERIC_DATE_RE = /\b(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})\b/g;
 const NUMERIC_MONTH_DAY_RE = /\b(\d{1,2})\/(\d{1,2})\b(?!\s*\/)/g;
 // "June of 86", "June in 86" (a bare "June 86" is handled as day > 31 below).
 const MONTH_OF_YY_RE = new RegExp(`\\b${MONTH},?\\s+(?:of|in)\\s+(\\d{2})(?![ -]?\\d)`, 'gi');
-const TWENTY_FOUR_SEVEN_RE = /\b24\s?[/\s-]\s?7\b(?![\s,./-]*\d)/g;
+// "24/7", "twenty four seven": not when part of a longer digit sequence ("45 24 7").
+const TWENTY_FOUR_SEVEN_RE = /(?<!\d[^\p{L}\d]{0,6})\b24\s?[/\s-]\s?7\b(?![^\p{L}\d]{0,6}\d)/gu;
 const MONTH_YEAR_RE = new RegExp(`\\b${MONTH},?\\s+(?:of\\s+|in\\s+)?${YEAR}`, 'gi');
 const MONTH_DAY_RE = new RegExp(`\\b${MONTH},?\\s+(?:the\\s+)?${DAY}${YEAR_TAIL}`, 'gi');
 const DAY_MONTH_RE = new RegExp(`\\b(?:the\\s+)?${DAY}\\s+(?:of\\s+)?${MONTH}${YEAR_TAIL}`, 'gi');
@@ -365,8 +385,14 @@ const ID_CONTEXT_RE =
   /#|\b(?:id|identifier|numbers?|no|code|pin|account|acct|member|membership|reference|ref|zip|postal|policy|confirmation|dob|birth|birthday|born|digits?|phone|card|ssn|social|routing|extension|ext|claim|group|order|case|ticket|password|passcode|address|street|apartment|apt|suite)\b/i;
 const YEAR_PREP_BEFORE_RE = /\b(?:since|in|from|until|till|by|before|after|around|of)\s+$/i;
 const BIRTH_CONTEXT_RE = /\b(?:born|birth|birthday|dob|age|aged)\b/i;
-const UNIT_AFTER_RE =
-  /^\s*(?:,?\s*(?:or|and|to|maybe|-)\s*\d+\s*)?(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?|seconds?|secs?|mg|mcg|milligrams?|ml|milliliters?|dollars?|bucks|cents?|percent|pills?|tablets?|capsules?|refills?|doses?|times|people|items?|units?)\b/i;
+// "ends in 2014", "starts with 1987", "the last four ...": the number is part of an ID.
+const PART_OF_ID_BEFORE_RE =
+  /\b(?:ends?|ending|ended|starts?|starting|started|begins?|beginning)\s+(?:in|with)\s+$/i;
+const PART_OF_ID_SENTENCE_RE = /\blast\s+(?:two|three|four|five|six|2|3|4|5|6)\b|\bdigits?\b/i;
+const UNIT_AFTER_RE = new RegExp(
+  `^\\s*(?:,?\\s*(?:or|and|to|maybe|-)\\s*\\d+\\s*)?(?:${UNIT_WORDS}|%)(?![a-z])`,
+  'i',
+);
 const QUANTITY_LIST_RE = /^\d+(?:\s*[,-]\s*\d+)+$/;
 const TOLL_FREE = new Set(['800', '888', '877', '866', '855', '844', '833']);
 const TOLL_FREE_AFTER_RE = /^\s*-?\s*numbers?\b/i;
@@ -491,6 +517,15 @@ interface Run {
   groups: string[];
 }
 
+// Spaced or repeated punctuation between digit groups ("4 . . . 5", "45 ....... 12",
+// "45 - - - - 12") is compacted so it cannot exceed the run finder's separator cap.
+function compactSeparators(text: string): string {
+  return text.replace(/[^\p{L}\p{N}]{2,}/gu, (sep) =>
+    sep.replace(/\s+/g, ' ').replace(/([^\s\p{L}\p{N}])(?:\s?\1)+/gu, '$1$1$1'),
+  );
+}
+
+// `text` must already be compacted (see compactSeparators).
 function findRuns(text: string): Run[] {
   const out: Run[] = [];
   for (const m of text.matchAll(RUN_RE)) {
@@ -516,7 +551,8 @@ function looksLikeClockTime(r: Run): boolean {
 
 // Digit runs that are facts. `sentence` gives context: a spoken clock time is only a time
 // when the sentence talks about time and not about an identifier.
-function factRuns(text: string, sentence: string): { raw: string; norm: string }[] {
+function factRuns(input: string, sentence: string): { raw: string; norm: string }[] {
+  const text = compactSeparators(input);
   const out: { raw: string; norm: string }[] = [];
   for (const r of findRuns(text)) {
     const norm = r.groups.join('');
@@ -524,13 +560,18 @@ function factRuns(text: string, sentence: string): { raw: string; norm: string }
     const before = text.slice(Math.max(0, r.start - 24), r.start);
     const after = text.slice(r.end, r.end + 40);
     if (TOLL_FREE.has(norm.replace(/^1/, '')) && TOLL_FREE_AFTER_RE.test(after)) continue;
+    const partOfId =
+      ID_CONTEXT_RE.test(sentence) ||
+      PART_OF_ID_BEFORE_RE.test(before) ||
+      PART_OF_ID_SENTENCE_RE.test(sentence);
     if (
       looksLikeClockTime(r) &&
       (TIME_PREP_BEFORE_RE.test(before) || TIME_CONTEXT_RE.test(sentence)) &&
-      !ID_CONTEXT_RE.test(sentence)
+      !partOfId
     ) {
       continue;
     }
+    // "since 2019": a bare year in ordinary talk. Never in birth or identifier talk.
     const year = Number(norm);
     if (
       norm.length === 4 &&
@@ -538,7 +579,8 @@ function factRuns(text: string, sentence: string): { raw: string; norm: string }
       year >= 1900 &&
       year <= 2099 &&
       YEAR_PREP_BEFORE_RE.test(before) &&
-      !BIRTH_CONTEXT_RE.test(sentence)
+      !BIRTH_CONTEXT_RE.test(sentence) &&
+      !partOfId
     ) {
       continue;
     }
@@ -562,7 +604,7 @@ function factRuns(text: string, sentence: string): { raw: string; norm: string }
 
 // Every digit run, whole, with no classification (used for ledger read-back forms).
 function plainRuns(text: string): string[] {
-  return findRuns(text)
+  return findRuns(compactSeparators(text))
     .map((r) => r.groups.join(''))
     .filter((n) => n.length >= 3);
 }
