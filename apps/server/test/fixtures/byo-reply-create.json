@@ -1,0 +1,88 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "[[carryover-call:7d1e4b2a-0c3f-4a8e-b5d6-1f2e3a4b5c6d]] relay session\n\nOutput is spoken aloud. Plain conversational text only — no formatting characters (asterisks, backticks, hyphens, bullets, emoji).\n\nNumbers you say aloud: spell identifiers digit-by-digit (\"5 1 5 5 5 1 2 3 4\"); words for counts (\"twelve cars\"); natural speech for times and dates (\"nine oh one AM\", \"March fifth\"); spell email punctuation (\"john at example dot com\"). That spelling is for speech only. A tool argument takes the plain machine value with nothing added — \"5155551234\", \"john@example.com\" — never the spoken spelling.\n\nIf a system message says a function is already executing, don't call it again with the same arguments. You can call it with different arguments, or answer unrelated questions normally.\n\nA tool's inputs can come from anything already in this conversation: what the caller said, or what an earlier tool returned. When every required value for a tool is already available, call the tool. Look back through the transcript to resolve references like \"that's my number\" or \"the email I gave you\". Before asking the caller for a value you need as a tool argument, check whether a tool you already have can return it from values you already hold. If one can, call that tool instead of asking.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "Hi, I am calling on behalf of a customer who is using a relay assistant. "
+    },
+    {
+      "role": "user",
+      "content": "Hello, this is Riverside Pharmacy. How can I help you?"
+    },
+    {
+      "role": "assistant",
+      "content": "Hi, I am calling to refill a prescription for Maria Gonzalez. "
+    },
+    {
+      "role": "user",
+      "content": "Can I get your date of birth, please?"
+    },
+    {
+      "role": "user",
+      "content": "Okay. And what is the name on the prescription?"
+    },
+    {
+      "role": "assistant",
+      "content": "DEFAULT_REPLY_MARKER. "
+    },
+    {
+      "role": "assistant",
+      "content": "Her date of birth is March fourteenth, nineteen fifty two. "
+    },
+    {
+      "role": "system",
+      "content": "RELAY_UTTERANCE:q7x2m9k4p1z8"
+    }
+  ],
+  "model": "relay-brain-v0",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "type": "function",
+        "name": "ask_user",
+        "description": "Ask the Deaf customer (who types) a question and wait for their typed answer.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "The question to relay to the customer."
+            }
+          },
+          "required": ["question"]
+        },
+        "timeout_seconds": 60,
+        "execution_mode": "interactive"
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "type": "function",
+        "name": "wait_for_user",
+        "description": "Pause and stay silent while the customer is typing or deciding.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "Why we are waiting."
+            }
+          },
+          "required": []
+        },
+        "timeout_seconds": 300,
+        "execution_mode": "hold"
+      }
+    }
+  ]
+}
