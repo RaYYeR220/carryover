@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 
 const DEFAULT_BASE_URL = 'wss://streaming.assemblyai.com/v3/ws';
+const CONNECT_TIMEOUT_MS = 8000;
 const TERMINATE_TIMEOUT_MS = 3000;
 
 export interface CaptionWord {
@@ -27,6 +28,8 @@ export interface CaptionsOptions {
   onTurn: (t: CaptionTurn) => void;
   onSpeechStarted: (tsMs: number) => void;
   onError: (e: Error) => void;
+  // Overridable so tests don't have to wait out the real 8s default.
+  connectTimeoutMs?: number;
 }
 
 interface StreamEvent {
@@ -55,8 +58,29 @@ export class CaptionsStream {
     ws.on('error', (err) => this.opts.onError(err instanceof Error ? err : new Error(String(err))));
 
     return new Promise((resolve, reject) => {
-      ws.once('open', () => resolve());
-      ws.once('error', (err) => reject(err));
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // A TCP connect with no completed WS upgrade otherwise leaves the
+        // socket stuck in CONNECTING forever, and close() can't clean up a
+        // socket that never finished connecting.
+        ws.terminate();
+        reject(new Error('CaptionsStream.connect timed out'));
+      }, this.opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
+
+      ws.once('open', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      });
+      ws.once('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
     });
   }
 
@@ -75,7 +99,28 @@ export class CaptionsStream {
 
   close(): Promise<void> {
     const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    if (!ws) {
+      return Promise.resolve();
+    }
+
+    if (ws.readyState === WebSocket.CONNECTING) {
+      // Stuck mid-handshake: there's no stream to terminate gracefully, so
+      // just make sure the socket goes away.
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(finish, TERMINATE_TIMEOUT_MS);
+        ws.once('close', finish);
+        ws.terminate();
+      });
+    }
+
+    if (ws.readyState !== WebSocket.OPEN) {
       return Promise.resolve();
     }
 

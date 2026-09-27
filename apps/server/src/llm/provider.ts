@@ -55,7 +55,7 @@ function toChunkDelta(chunk: ChatCompletionChunk): StreamDelta | null {
   if (!choice) return null;
   const delta = choice.delta;
   const out: StreamDelta = {};
-  if (delta?.content) out.text = delta.content;
+  if (delta?.content !== undefined && delta?.content !== null) out.text = delta.content;
   if (delta?.tool_calls && delta.tool_calls.length > 0) {
     out.toolCalls = delta.tool_calls.map((tc) => ({
       index: tc.index,

@@ -1,4 +1,4 @@
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { type VAEvent, VoiceAgentSession } from '../../src/aai/voiceAgent.js';
@@ -12,6 +12,8 @@ interface FakeServer {
 }
 
 const openServers: WebSocketServer[] = [];
+const openTcpServers: net.Server[] = [];
+const openTcpSockets: net.Socket[] = [];
 
 afterEach(async () => {
   // node's http.Server.close() (which ws uses under the hood for port:0 servers)
@@ -28,7 +30,30 @@ afterEach(async () => {
         }),
     ),
   );
+  for (const s of openTcpSockets.splice(0)) {
+    if (!s.destroyed) s.destroy();
+  }
+  await Promise.all(
+    openTcpServers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))),
+  );
 });
+
+// A bare TCP listener that accepts the connection but never sends an HTTP
+// upgrade response, so a WebSocket client connecting to it is stuck in
+// CONNECTING forever -- exactly the stalled-handshake scenario the connect
+// timeout exists for.
+function startStallingServer(): Promise<{ url: string }> {
+  return new Promise((resolve) => {
+    const server = net.createServer((socket) => {
+      openTcpSockets.push(socket);
+    });
+    openTcpServers.push(server);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({ url: `ws://127.0.0.1:${port}` });
+    });
+  });
+}
 
 function startFakeServer(
   onMessage?: (msg: Record<string, unknown>, send: (o: unknown) => void) => void,
@@ -231,6 +256,53 @@ describe('VoiceAgentSession', () => {
     expect(server.received.some((m) => m.type === 'session.end')).toBe(true);
     await waitFor(() => closes.length > 0);
     expect(closes[0]?.code).toBe(1000);
+  });
+
+  it('connect() rejects within the timeout and terminates the socket on a stalled handshake', async () => {
+    const { url } = await startStallingServer();
+    const closes: { code: number; reason: string }[] = [];
+    const session = new VoiceAgentSession({
+      apiKey: 'test-key',
+      url,
+      agentId: 'agent_abc',
+      connectTimeoutMs: 50,
+      onEvent: () => {},
+      onClose: (code, reason) => closes.push({ code, reason }),
+    });
+
+    const started = Date.now();
+    await expect(session.connect()).rejects.toThrow(/timed out/);
+    // Well under the real 8s default -- proves the override actually applied
+    // rather than the promise settling for some unrelated reason.
+    expect(Date.now() - started).toBeLessThan(2000);
+
+    // The underlying socket must actually be torn down, not just abandoned:
+    // onClose is only ever invoked from the socket's own 'close' event.
+    await waitFor(() => closes.length > 0);
+  });
+
+  it('end() on a still-connecting session resolves promptly and terminates the socket', async () => {
+    const { url } = await startStallingServer();
+    const closes: { code: number; reason: string }[] = [];
+    const session = new VoiceAgentSession({
+      apiKey: 'test-key',
+      url,
+      agentId: 'agent_abc',
+      connectTimeoutMs: 2000, // long enough that end() -- not the timeout -- drives cleanup
+      onEvent: () => {},
+      onClose: (code, reason) => closes.push({ code, reason }),
+    });
+
+    const connectPromise = session.connect();
+    connectPromise.catch(() => {});
+    // Give the socket a moment to actually reach CONNECTING before ending.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const started = Date.now();
+    await session.end();
+    expect(Date.now() - started).toBeLessThan(2000);
+
+    await waitFor(() => closes.length > 0);
   });
 });
 

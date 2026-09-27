@@ -188,6 +188,24 @@ describe('createProvider', () => {
     expect(gatewayAuth).toBe('aai-key');
   });
 
+  it('streamChat does not drop an empty-string content delta', async () => {
+    const url = await startFakeChatServer((_req, res) => {
+      sendSse(res, [
+        { id: 'c1', choices: [{ index: 0, delta: { content: '' }, finish_reason: null }] },
+        { id: 'c1', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] },
+        { id: 'c1', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      ]);
+    });
+
+    const provider = createProvider(baseConfig(), url);
+    const deltas: StreamDelta[] = [];
+    for await (const delta of provider.streamChat([{ role: 'user', content: 'hi' }])) {
+      deltas.push(delta);
+    }
+
+    expect(deltas).toEqual([{ text: '' }, { text: 'ok' }, { done: true }]);
+  });
+
   it('complete() returns the non-streamed message content', async () => {
     const url = await startFakeChatServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });

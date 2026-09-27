@@ -1,4 +1,4 @@
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { CaptionsStream } from '../../src/aai/captions.js';
@@ -14,12 +14,37 @@ interface FakeServer {
 }
 
 const openServers: WebSocketServer[] = [];
+const openTcpServers: net.Server[] = [];
+const openTcpSockets: net.Socket[] = [];
 
 afterEach(async () => {
   await Promise.all(
     openServers.splice(0).map((wss) => new Promise<void>((r) => wss.close(() => r()))),
   );
+  for (const s of openTcpSockets.splice(0)) {
+    if (!s.destroyed) s.destroy();
+  }
+  await Promise.all(
+    openTcpServers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))),
+  );
 });
+
+// A bare TCP listener that accepts the connection but never sends an HTTP
+// upgrade response, so a WebSocket client connecting to it is stuck in
+// CONNECTING forever -- exactly the stalled-handshake scenario the connect
+// timeout exists for.
+function startStallingServer(): Promise<{ url: string }> {
+  return new Promise((resolve) => {
+    const server = net.createServer((socket) => {
+      openTcpSockets.push(socket);
+    });
+    openTcpServers.push(server);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({ url: `ws://127.0.0.1:${port}` });
+    });
+  });
+}
 
 function startFakeServer() {
   return new Promise<FakeServer>((resolve) => {
@@ -223,6 +248,55 @@ describe('CaptionsStream', () => {
 
     await stream.close();
     expect(server.jsonReceived.some((m) => m.type === 'Terminate')).toBe(true);
+  });
+
+  it('connect() rejects within the timeout and terminates the socket on a stalled handshake', async () => {
+    const { url } = await startStallingServer();
+    const errors: Error[] = [];
+    const stream = new CaptionsStream({
+      apiKey: 'raw-key',
+      url,
+      keyterms: [],
+      connectTimeoutMs: 50,
+      onTurn: () => {},
+      onSpeechStarted: () => {},
+      onError: (e) => errors.push(e),
+    });
+
+    const started = Date.now();
+    await expect(stream.connect()).rejects.toThrow(/timed out/);
+    // Well under the real 8s default -- proves the override actually applied
+    // rather than the promise settling for some unrelated reason.
+    expect(Date.now() - started).toBeLessThan(2000);
+
+    // The underlying socket must actually be torn down, not just abandoned:
+    // a forced termination during the handshake also surfaces through onError.
+    await waitFor(() => errors.length > 0);
+  });
+
+  it('close() on a still-connecting stream resolves promptly and terminates the socket', async () => {
+    const { url } = await startStallingServer();
+    const errors: Error[] = [];
+    const stream = new CaptionsStream({
+      apiKey: 'raw-key',
+      url,
+      keyterms: [],
+      connectTimeoutMs: 2000, // long enough that close() -- not the timeout -- drives cleanup
+      onTurn: () => {},
+      onSpeechStarted: () => {},
+      onError: (e) => errors.push(e),
+    });
+
+    const connectPromise = stream.connect();
+    connectPromise.catch(() => {});
+    // Give the socket a moment to actually reach CONNECTING before closing.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const started = Date.now();
+    await stream.close();
+    expect(Date.now() - started).toBeLessThan(2000);
+
+    await waitFor(() => errors.length > 0);
   });
 });
 
