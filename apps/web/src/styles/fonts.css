@@ -1,0 +1,36 @@
+/*
+ * Font roles. The faces themselves load from Google Fonts and Fontshare
+ * (see index.html):
+ *   General Sans 300/400: display only.
+ *   Atkinson Hyperlegible Next: all UI, body and captions.
+ *   Doto: LED contexts and tiny status labels only (LIVE, HOLD, KEY 2, LINE OPEN).
+ */
+.t-display {
+  font-family: var(--display);
+  font-weight: 300;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.t-hero {
+  font: 300 var(--fs-hero) / 1 var(--display);
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.t-h2 {
+  font: 300 var(--fs-h2) / 1.02 var(--display);
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.t-dot {
+  font-family: var(--dot);
+  font-weight: 900;
+  font-variation-settings: "ROND" 100;
+  letter-spacing: 0.06em;
+}
+
+.t-tabular {
+  font-variant-numeric: tabular-nums;
+}

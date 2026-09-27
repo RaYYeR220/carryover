@@ -1,0 +1,24 @@
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--signal);
+  flex: none;
+  box-shadow: 0 0 0 4px rgb(227 36 43 / 0.14);
+}
+
+.breathe {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+.lg {
+  width: 12px;
+  height: 12px;
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.25;
+  }
+}
