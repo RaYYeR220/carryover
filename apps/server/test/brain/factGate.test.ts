@@ -209,6 +209,10 @@ describe('splitSentences', () => {
       'It is six one. one nine.',
     ]);
     expect(splitSentences('Press 2. Then hold').complete).toEqual(['Press 2.']);
+    expect(splitSentences('Her ID is ٤٥. ١٢. Thanks').complete).toEqual(['Her ID is ٤٥. ١٢.']);
+    expect(splitSentences('Her ID is 4... 5... 6... 2. Thanks').complete).toEqual([
+      'Her ID is 4... 5... 6... 2.',
+    ]);
   });
   it('waits for the character after a terminator', () => {
     expect(splitSentences('Her email is maya@example.')).toEqual({
@@ -229,5 +233,104 @@ describe('splitSentences', () => {
       complete: ['She said "yes."'],
       rest: ' Then',
     });
+  });
+});
+
+describe('fix round 1: spoken separators cannot split an invented number (block)', () => {
+  const ledger = createLedger(['March 14, 1952', 'Member ID 88-1204-77', 'maya@example.com']);
+  const blocked = [
+    'Her member ID is 4... 5... 6... 2.',
+    'Her member ID is 8… 8… 1… 3.',
+    'Her member ID is eight... four... six...',
+    'Her ID is four five dash six two dash five one.',
+    'Her ID is 45 -- 12 -- 99.',
+    'Her birthday is 6 slash 1 slash 86.',
+    'Her ID is 45, then 12, then 99.',
+    'Her code is four O four seven.',
+    'Her code is four o four seven.',
+    'She lives at a hundred and twelve Main Street.',
+    'She lives at one hundred twelve Main Street.',
+    'Her ID is ４５１２９９.',
+    'Her ID is ٤٥١٢٩٩.',
+    'Her ID is 45​12​99.',
+    'Her ID is 45·12·99.',
+    'Her ID is 45 / 12 / 99.',
+    'Her ID is 4 point 5 point 1 2.',
+  ];
+  for (const s of blocked) {
+    it(`blocks: ${JSON.stringify(s)}`, () => {
+      expect(checkSentence(s, ledger).ok).toBe(false);
+    });
+  }
+  it('still passes the allowed ID with the same separators', () => {
+    expect(checkSentence('Her member ID is 8... 8... 1... 2... 0... 4... 7... 7.', ledger).ok).toBe(
+      true,
+    );
+    expect(checkSentence('It is 88 dash 1204 dash 77.', ledger).ok).toBe(true);
+    expect(checkSentence('It is 88·1204·77.', ledger).ok).toBe(true);
+    expect(checkSentence('It is ٨٨١٢٠٤٧٧.', ledger).ok).toBe(true);
+  });
+});
+
+describe('fix round 1: ordinary speech is not blocked (pass)', () => {
+  const ledger = createLedger(['March 14, 1952', 'Member ID 88-1204-77']);
+  const passes = [
+    'Does three thirty work for her?',
+    'How about two thirty on Thursday?',
+    'Would ten fifteen tomorrow work?',
+    'Is 3 30 okay?',
+    'I can wait 10, 15 minutes.',
+    'That takes about 20, 30 minutes.',
+    'In 5, 10, or 15 minutes.',
+    'Is the copay $12.99?',
+    'She has been a customer since 2019.',
+    'Can I call the 800 number instead?',
+    'Do you have twenty four seven support?',
+    'We offer 24/7 support.',
+    'It is 10-15 minutes away.',
+    'Absolutely, a hundred percent.',
+  ];
+  for (const s of passes) {
+    it(`passes: ${JSON.stringify(s)}`, () => {
+      expect(checkSentence(s, ledger).ok).toBe(true);
+    });
+  }
+  it('keeps the negative controls blocked', () => {
+    expect(checkSentence('Her ID: 45 12 99 minutes.', ledger).ok).toBe(false);
+    expect(checkSentence('Her member ID is 10, 15 minutes.', ledger).ok).toBe(false);
+    expect(checkSentence('Her date of birth is June 1st, 1986.', ledger).ok).toBe(false);
+    expect(checkSentence('She was born in 1986.', ledger).ok).toBe(false);
+    expect(checkSentence('She was born in nineteen eighty six.', ledger).ok).toBe(false);
+    expect(checkSentence('Her PIN is 12 45?', ledger).ok).toBe(false);
+    expect(checkSentence('Her member ID is four fifteen, does that work?', ledger).ok).toBe(false);
+    expect(checkSentence('Call 1-800-555-0199, the 800 number.', ledger).ok).toBe(false);
+  });
+});
+
+describe('fix round 1: partial dates without a four-digit year (MINOR d)', () => {
+  const ledger = createLedger(['March 14, 1952']);
+  it('month + two-digit year and numeric month/day are dates', () => {
+    expect(extractFacts('June of eighty six').map((f) => f.norm)).toEqual(['1986-06']);
+    expect(extractFacts("June '86").map((f) => f.norm)).toEqual(['1986-06']);
+    expect(extractFacts('born 6/1').map((f) => f.norm)).toEqual(['--06-01']);
+    expect(checkSentence('She was born in June of eighty six.', ledger).ok).toBe(false);
+    expect(checkSentence("She was born June '86.", ledger).ok).toBe(false);
+    expect(checkSentence('She was born 6/1.', ledger).ok).toBe(false);
+    expect(checkSentence('She was born 3/14.', ledger).ok).toBe(true);
+    expect(checkSentence("She was born March '52.", ledger).ok).toBe(true);
+  });
+});
+
+describe('fix round 1: ledger sources (MINOR c)', () => {
+  it('user-sourced numbers allow partial read-backs, other-party numbers only whole', () => {
+    const l = createLedger([]);
+    l.add('Call us back at 555 867 5309.', 'other');
+    expect(checkSentence('I will call 555 867 5309.', l).ok).toBe(true);
+    expect(checkSentence('Her code is 867.', l).ok).toBe(false);
+    expect(checkSentence('It ends in 5309.', l).ok).toBe(false);
+    l.add('Her member ID is 88-1204-77.');
+    expect(checkSentence('It ends in 0477.', l).ok).toBe(true);
+    l.add('Account 44 71 22 99.', 'user');
+    expect(checkSentence('The last four are 2299.', l).ok).toBe(true);
   });
 });

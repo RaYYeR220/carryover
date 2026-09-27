@@ -22,12 +22,14 @@ export interface BrainTiming {
   keepaliveMs: number; // SSE comment cadence while the LLM is thinking
   firstOutputTimeoutMs: number; // nothing said by then → polite filler and finish
   maxStreamMs: number; // hard cap on one proxied reply
+  stallMs: number; // once something was said, an LLM silent this long ends the reply
 }
 
 export const DEFAULT_BRAIN_TIMING: BrainTiming = {
   keepaliveMs: 3000,
   firstOutputTimeoutMs: 8000,
   maxStreamMs: 30000,
+  stallMs: 7000,
 };
 
 export interface BrainRouteDeps {
@@ -39,7 +41,9 @@ export interface BrainRouteDeps {
 
 const TIMEOUT_FILLER = 'Sorry, one moment.';
 const DEFAULT_MODEL = 'carryover-brain';
-const MIN_KEYED_DIGITS = 3;
+// Menu navigation ("2", "132") is keyed freely; 4+ digits look like an identifier and
+// must be in the ledger.
+const MIN_GATED_KEYED_DIGITS = 4;
 
 function authorized(header: string | undefined, secret: string): boolean {
   if (!secret || typeof header !== 'string') return false;
@@ -191,7 +195,7 @@ async function runProxy(
     for (const [index, t] of tools) {
       if (!t.held || stopped) continue;
       const digits = t.args.replace(/\D/g, '');
-      if (digits.length >= MIN_KEYED_DIGITS) {
+      if (digits.length >= MIN_GATED_KEYED_DIGITS) {
         const fact: ExtractedFact = { kind: 'digits', raw: digits, norm: digits };
         if (!view.ledger.has(fact)) {
           block(`press_keys ${digits}`, [fact]);
@@ -216,6 +220,17 @@ async function runProxy(
     w.finish(finishReason());
     ac.abort();
   }, timing.maxStreamMs);
+  // Keepalives hold AAI's read timeout off, so a stalled LLM would otherwise mean dead air
+  // on the line. After the first output, a silent upstream ends the reply with what was
+  // already said.
+  let stall: ReturnType<typeof setTimeout> | undefined;
+  const armStall = () => {
+    clearTimeout(stall);
+    stall = setTimeout(() => {
+      w.finish(finishReason());
+      ac.abort();
+    }, timing.stallMs);
+  };
 
   try {
     const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt(view) }, ...history];
@@ -231,6 +246,7 @@ async function runProxy(
         if (stopped) break;
       }
       if (d.done) break;
+      if (w.hasOutput) armStall();
     }
     if (!stopped && !w.finished) {
       release(buffer);
@@ -244,6 +260,7 @@ async function runProxy(
     clearInterval(keepalive);
     clearTimeout(firstOutput);
     clearTimeout(hardCap);
+    clearTimeout(stall);
     w.finish(finishReason());
     ac.abort();
   }

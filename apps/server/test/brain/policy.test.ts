@@ -104,6 +104,15 @@ describe('systemPrompt', () => {
     expect(s).not.toContain('carryover-call');
   });
 
+  it('only the FACT SHEET is a source of personal facts, and read-back values are never confirmed', () => {
+    const s = systemPrompt(fakeView({ callId: 'call-aaaa-1111' }));
+    expect(s).toMatch(/never state any personal fact[^.]*unless it is written in the FACT SHEET/i);
+    expect(s).not.toMatch(/other party said it first/i);
+    expect(s).toMatch(/never confirm a personal fact/i);
+    expect(s).toContain('Is her date of birth June 1st, 1986?');
+    expect(s).toMatch(/call ask_user instead of saying yes or no/i);
+  });
+
   it('with no facts says it knows none', () => {
     const s = systemPrompt(fakeView({ callId: 'call-aaaa-1111', facts: [], goal: undefined }));
     expect(s).toMatch(/FACT SHEET[\s\S]*none/i);

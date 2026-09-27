@@ -372,6 +372,18 @@ describe('brain route: proxy through the fact gate', () => {
     expect(view.blocked).toHaveLength(1);
   });
 
+  it('blocks an ID read out with ellipsis separators, streamed in tiny pieces', async () => {
+    const view = fakeView({ callId: CALL_A });
+    const { app: a } = makeApp(
+      new FakeProvider(textScript('Sure. Her member ID is 8… 8… 1… 3. Anything else?', 2)),
+      [view],
+    );
+    const { sse } = await post(a, body(CALL_A, them('Member ID?')));
+    expect(sse.text).toBe('Sure. One moment, let me check with Maya.');
+    expect(view.blocked).toHaveLength(1);
+    expect(view.blocked[0]?.offending.map((f) => f.norm)).toEqual(['8813']);
+  });
+
   it('checks the unterminated tail when the stream ends', async () => {
     const view = fakeView({ callId: CALL_A });
     const { app: a } = makeApp(new FakeProvider(textScript('Her email is maya@example.com')), [
@@ -477,6 +489,44 @@ describe('brain route: proxy through the fact gate', () => {
     ]);
     expect(view2.blocked).toHaveLength(0);
     await second.app.close();
+  });
+
+  it('lets short menu key sequences through (press_keys "132")', async () => {
+    const provider = new FakeProvider(async function* () {
+      yield {
+        toolCalls: [{ index: 0, id: 'c3', name: 'press_keys', argumentsDelta: '{"digits":"132"}' }],
+      };
+      yield { done: true };
+    });
+    const view = fakeView({ callId: CALL_A, lineState: 'ivr' });
+    const { app: a } = makeApp(provider, [view]);
+    const { sse } = await post(a, body(CALL_A, them('Press 1, then 3, then 2 for refills.')));
+    expect(sse.toolCalls).toEqual([
+      { index: 0, id: 'c3', name: 'press_keys', args: '{"digits":"132"}' },
+    ]);
+    expect(view.blocked).toHaveLength(0);
+  });
+
+  it('finishes with what was said when the LLM stalls after the first sentence', async () => {
+    const provider = new FakeProvider(async function* (signal) {
+      yield { text: 'Sure, I can hold. ' };
+      yield { text: 'And ' };
+      await waitAbort(signal);
+    });
+    const { app: a } = makeApp(provider, [fakeView({ callId: CALL_A })], {
+      keepaliveMs: 20,
+      firstOutputTimeoutMs: 5000,
+      stallMs: 120,
+      maxStreamMs: 5000,
+    });
+    const started = Date.now();
+    const { res, sse } = await post(a, body(CALL_A, them('Can you hold?')));
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(res.statusCode).toBe(200);
+    expect(sse.text).toBe('Sure, I can hold.');
+    expect(sse.finish).toEqual(['stop']);
+    expect(sse.done).toBe(true);
+    expect(provider.calls[0]?.signal.aborted).toBe(true);
   });
 
   it('provider throwing → 200 with an empty completion', async () => {

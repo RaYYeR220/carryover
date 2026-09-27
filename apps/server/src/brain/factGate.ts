@@ -4,6 +4,21 @@
 // must already be in the call's ledger (the user's consented facts, answers the user
 // typed, and everything the other party said). Prompts can be ignored by a model; this
 // check cannot.
+//
+// Known limits (deliberate, documented so nobody mistakes the gate for more than it is):
+// - Numbers under 3 digits are not facts (ages, "press 2", "20 mg"). A number split across
+//   sentences into 2-digit fragments ("Her ID is 12." ... "34.") is only caught when the
+//   fragments arrive in one sentence; splitSentences holds number-ended sentences to
+//   make that hard, not impossible.
+// - Alphanumeric IDs are only gated on their digits ("AB12C" → nothing, "MX-4471" → 4471).
+// - Digit groups separated by ordinary words ("45 or 12 or 99", "45 apples 12") are
+//   separate numbers; only spoken separators (dash, slash, then, point, dot, space) and
+//   short punctuation runs join groups into one number.
+// - Names, street names, cities and other words are not gated at all.
+// - Clock times, ordinals ("the 21st"), percentages, prices under $100, "24/7", toll-free
+//   "800 number" phrases and "since 2019"-style years are treated as ordinary speech.
+// - Confirming a wrong value read out by the other party ("Yes, that's right") has no
+//   fact in it; that case is covered by the system prompt, not here.
 
 export interface ExtractedFact {
   kind: 'digits' | 'date' | 'email';
@@ -11,9 +26,34 @@ export interface ExtractedFact {
   norm: string;
 }
 
+// Who a ledger text came from. 'user' (the default): consented facts, typed answers;
+// partial read-backs of their numbers are allowed. 'other': what the other party said
+// (CallSession should pass 'other' for captions); only whole numbers are allowed back.
+export type FactSource = 'user' | 'other';
+
 export interface FactLedger {
-  add(text: string): void;
+  add(text: string, source?: FactSource): void;
   has(fact: ExtractedFact): boolean;
+}
+
+// ---------------------------------------------------------------- text preparation
+
+// Maps any Unicode decimal digit to ASCII. Decimal digits come in contiguous runs of ten
+// starting at zero, so a digit's value is its distance to the start of its run.
+function asciiDigit(ch: string): string {
+  const cp = ch.codePointAt(0) as number;
+  let v = 0;
+  while (v < 9 && /\p{Nd}/u.test(String.fromCodePoint(cp - v - 1))) v++;
+  return String(v);
+}
+
+// NFKC folds fullwidth digits, "…" → "...", ligatures; format characters (zero-width
+// space/joiner, soft hyphen, bidi marks) are dropped so they cannot hide inside a number.
+export function prepareText(input: string): string {
+  return input
+    .normalize('NFKC')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\p{Nd}/gu, (ch) => (ch >= '0' && ch <= '9' ? ch : asciiDigit(ch)));
 }
 
 // ---------------------------------------------------------------- number words → digits
@@ -168,6 +208,17 @@ function scaled(
   return { value, next };
 }
 
+const ZERO_WORD_RE =
+  /(?<=\d[\s,.-]{0,3})\b(?:oh|o)\b(?![\s']*clock)|\b(?:oh|o)\b(?![\s']*clock)(?=[\s,.-]{1,3}\d)/gi;
+const connector = (words: string) =>
+  new RegExp(`(?<=\\d)[\\s,;:.]*\\b(?:${words})\\b[\\s,;:.]*(?=\\d)`, 'gi');
+const CONNECTORS: [RegExp, string][] = [
+  [connector('slash'), '/'],
+  [connector('dash|hyphen'), '-'],
+  [connector('point|dot'), '.'],
+  [connector('space|then|and then'), ', '],
+];
+
 // Rewrites spoken numbers as digits, keeping every other character in place:
 // "eight eight one two" → "8 8 1 2", "nineteen fifty two" → "19 52",
 // "March fourteenth" → "March 14th", "double seven" → "77", "four hundred twelve" → "412".
@@ -215,6 +266,19 @@ export function normalizeNumbers(input: string): string {
         continue;
       }
     }
+    // "a hundred and twelve", "a thousand"
+    if (
+      cur.w === 'a' &&
+      nx &&
+      (nx.w === 'hundred' || nx.w === 'thousand') &&
+      gapIs(text, cur, nx, PHRASE_GAP_RE)
+    ) {
+      const r = scaled(words, { value: 1, next: i + 1 }, text);
+      const last = words[r.next - 1] as Word;
+      emit(cur.start, last.end, String(r.value));
+      i = r.next;
+      continue;
+    }
     const base = below100(words, i, text);
     if (base) {
       const r = scaled(words, base, text);
@@ -226,12 +290,15 @@ export function normalizeNumbers(input: string): string {
     i++;
   }
   out += text.slice(pos);
-  // "oh" is a zero only next to other digits ("nine oh one", "nineteen oh five").
+  // "oh" / a lone "o" is a zero only next to other digits ("nine oh one", "four O four
+  // seven"), never in "o'clock".
   for (let k = 0; k < 4; k++) {
     const before = out;
-    out = out.replace(/(?<=\d[\s,-]{0,3})\boh\b|\boh\b(?=[\s,-]{1,3}\d)/gi, '0');
+    out = out.replace(ZERO_WORD_RE, '0');
     if (out === before) break;
   }
+  // Spoken separators between digits: "45 dash 12", "6 slash 1 slash 86", "45, then 12".
+  for (const [re, sep] of CONNECTORS) out = out.replace(re, sep);
   return out;
 }
 
@@ -254,12 +321,17 @@ const MONTHS: [RegExp, number][] = [
 const MONTH =
   '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b\\.?';
 // Years as they come out of normalizeNumbers: 1952, "19 52", "19 0 5", "1 9 5 2", 2003, "20 21".
-const YEAR = '((?:19|20)(?:\\d{2}|[ -]\\d{2}|[ -]0[ -]?\\d)|1 9 \\d \\d|2 0 \\d \\d)(?![ -]?\\d)';
+const YEAR =
+  "((?:19|20)(?:\\d{2}|[ -]\\d{2}|[ -]0[ -]?\\d)|1 9 \\d \\d|2 0 \\d \\d|['‘’]\\d{2})(?![ -]?\\d)";
 const DAY = '(\\d{1,2})(?:st|nd|rd|th)?(?!\\d)';
 const YEAR_TAIL = `(?:\\s*,?\\s*(?:of\\s+|in\\s+)?${YEAR})?`;
 
 const ISO_RE = /\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g;
 const NUMERIC_DATE_RE = /\b(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})\b/g;
+const NUMERIC_MONTH_DAY_RE = /\b(\d{1,2})\/(\d{1,2})\b(?!\s*\/)/g;
+// "June of 86", "June in 86" (a bare "June 86" is handled as day > 31 below).
+const MONTH_OF_YY_RE = new RegExp(`\\b${MONTH},?\\s+(?:of|in)\\s+(\\d{2})(?![ -]?\\d)`, 'gi');
+const TWENTY_FOUR_SEVEN_RE = /\b24\s?[/\s-]\s?7\b(?![\s,./-]*\d)/g;
 const MONTH_YEAR_RE = new RegExp(`\\b${MONTH},?\\s+(?:of\\s+|in\\s+)?${YEAR}`, 'gi');
 const MONTH_DAY_RE = new RegExp(`\\b${MONTH},?\\s+(?:the\\s+)?${DAY}${YEAR_TAIL}`, 'gi');
 const DAY_MONTH_RE = new RegExp(`\\b(?:the\\s+)?${DAY}\\s+(?:of\\s+)?${MONTH}${YEAR_TAIL}`, 'gi');
@@ -277,16 +349,29 @@ const TIME_RES: RegExp[] = [
   /\b\d{1,2}(?::\d{2}|[ ]\d{2}|[ ]0[ ]?\d)?\s*(?:a\.?\s?m\b\.?|p\.?\s?m\b\.?|o'?\s?clock\b)/gi,
   /\b\d{1,2}:\d{2}\b/g,
 ];
-// "at 2 30" (from "at two thirty"); never when more digits follow ("at 12 34 56" is a number).
-const TIME_AFTER_PREP_RE =
-  /\b(at|around|by|until|till|before|after|from|between)\s+(\d{1,2})[ ](0[ ]?\d|\d{2})\b(?![\s,.-]*\d)/gi;
 const ORDINAL_RE = /\b\d{1,2}(?:st|nd|rd|th)\b/gi;
 // Percentages ("one hundred percent", "20%") are not facts about anyone.
 const PERCENT_RE = /\b\d{1,3}(?:\.\d+)?\s?(?:%|percent\b)/gi;
-// A digit run: digits joined by up to 3 separator characters (space, comma, dot, dash, parens).
-const DIGIT_RUN_RE = /\d(?:[\s,.()-]{0,3}\d)*/g;
+// Prices under $100 ("Is the copay $12.99?").
+const PRICE_RE = /\$\s?\d{1,2}(?:[.,]\d{2})?(?![\d.,]*\d)/g;
+// A digit run: digit groups joined by short runs (<= 6) of anything that is neither a
+// letter nor a digit: spaces, commas, dots, dashes, slashes, "...", "·", parentheses.
+const RUN_RE = /\d+(?:[^\p{L}\p{N}]{1,6}\d+)*/gu;
 
-const MASK = ' | ';
+const TIME_PREP_BEFORE_RE = /\b(?:at|around|by|until|till|before|after|from|between|to)\s+$/i;
+const TIME_CONTEXT_RE =
+  /\?|\b(?:works?|working|okay|ok|fine|good|great|tomorrow|today|tonight|morning|afternoon|evening|noon|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|how about|what about|appointment|slot|time|available|availability|free|schedule|scheduled|reschedule|pick ?up|ready|opens?|closes?)\b/i;
+const ID_CONTEXT_RE =
+  /#|\b(?:id|identifier|numbers?|no|code|pin|account|acct|member|membership|reference|ref|zip|postal|policy|confirmation|dob|birth|birthday|born|digits?|phone|card|ssn|social|routing|extension|ext|claim|group|order|case|ticket|password|passcode|address|street|apartment|apt|suite)\b/i;
+const YEAR_PREP_BEFORE_RE = /\b(?:since|in|from|until|till|by|before|after|around|of)\s+$/i;
+const BIRTH_CONTEXT_RE = /\b(?:born|birth|birthday|dob|age|aged)\b/i;
+const UNIT_AFTER_RE =
+  /^\s*(?:,?\s*(?:or|and|to|maybe|-)\s*\d+\s*)?(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?|seconds?|secs?|mg|mcg|milligrams?|ml|milliliters?|dollars?|bucks|cents?|percent|pills?|tablets?|capsules?|refills?|doses?|times|people|items?|units?)\b/i;
+const QUANTITY_LIST_RE = /^\d+(?:\s*[,-]\s*\d+)+$/;
+const TOLL_FREE = new Set(['800', '888', '877', '866', '855', '844', '833']);
+const TOLL_FREE_AFTER_RE = /^\s*-?\s*numbers?\b/i;
+
+const MASK = ' masked ';
 
 function monthNumber(name: string): number {
   for (const [re, n] of MONTHS) if (re.test(name)) return n;
@@ -295,6 +380,7 @@ function monthNumber(name: string): number {
 
 function yearNumber(raw: string): number {
   const digits = raw.replace(/\D/g, '');
+  if (digits.length === 2) return twoDigitYear(Number(digits));
   return digits.length === 4 ? Number(digits) : 0;
 }
 
@@ -317,7 +403,8 @@ function twoDigitYear(yy: number): number {
 
 function extractDates(text: string, facts: ExtractedFact[]): string {
   const push = (raw: string, norm: string) => facts.push({ kind: 'date', raw: raw.trim(), norm });
-  let t = text.replace(ISO_RE, (m, y: string, mo: string, d: string) => {
+  let t = text.replace(TWENTY_FOUR_SEVEN_RE, MASK);
+  t = t.replace(ISO_RE, (m, y: string, mo: string, d: string) => {
     const month = Number(mo);
     const day = Number(d);
     if (month < 1 || month > 12 || !validDay(day)) return m;
@@ -333,6 +420,14 @@ function extractDates(text: string, facts: ExtractedFact[]): string {
     push(m, fullDate(year, month, day));
     return MASK;
   });
+  t = t.replace(NUMERIC_MONTH_DAY_RE, (m, a: string, b: string) => {
+    let month = Number(a);
+    let day = Number(b);
+    if (month > 12 && day <= 12) [month, day] = [day, month];
+    if (month < 1 || month > 12 || !validDay(day)) return m;
+    push(m, `--${pad2(month)}-${pad2(day)}`);
+    return MASK;
+  });
   // Day-first before month-year, so "14 March 1952" keeps its day.
   t = t.replace(DAY_MONTH_RE, (m, d: string, mon: string, y: string | undefined) => {
     const day = Number(d);
@@ -345,8 +440,17 @@ function extractDates(text: string, facts: ExtractedFact[]): string {
     push(m, `${yearNumber(y)}-${pad2(monthNumber(mon))}`);
     return MASK;
   });
+  t = t.replace(MONTH_OF_YY_RE, (m, mon: string, yy: string) => {
+    push(m, `${twoDigitYear(Number(yy))}-${pad2(monthNumber(mon))}`);
+    return MASK;
+  });
   t = t.replace(MONTH_DAY_RE, (m, mon: string, d: string, y: string | undefined) => {
     const day = Number(d);
+    if (!y && d.length === 2 && day > 31) {
+      // "June 86": a day can't be 86, so it's a two-digit year.
+      push(m, `${twoDigitYear(day)}-${pad2(monthNumber(mon))}`);
+      return MASK;
+    }
     if (!validDay(day)) return m;
     const month = monthNumber(mon);
     push(m, y ? fullDate(yearNumber(y), month, day) : `--${pad2(month)}-${pad2(day)}`);
@@ -377,20 +481,90 @@ function extractEmails(text: string, facts: ExtractedFact[]): string {
 function maskTimes(text: string): string {
   let t = text;
   for (const re of TIME_RES) t = t.replace(re, MASK);
-  t = t.replace(TIME_AFTER_PREP_RE, (m, prep: string, h: string, mm: string) => {
-    const minutes = Number(mm.replace(/\D/g, ''));
-    return Number(h) <= 23 && minutes <= 59 ? `${prep}${MASK}` : m;
-  });
-  return t.replace(ORDINAL_RE, MASK).replace(PERCENT_RE, MASK);
+  return t.replace(ORDINAL_RE, MASK).replace(PERCENT_RE, MASK).replace(PRICE_RE, MASK);
 }
 
-function digitRuns(text: string): { raw: string; norm: string }[] {
-  const out: { raw: string; norm: string }[] = [];
-  for (const m of text.matchAll(DIGIT_RUN_RE)) {
-    const norm = m[0].replace(/\D/g, '');
-    if (norm.length >= 3) out.push({ raw: m[0], norm });
+interface Run {
+  raw: string;
+  start: number;
+  end: number;
+  groups: string[];
+}
+
+function findRuns(text: string): Run[] {
+  const out: Run[] = [];
+  for (const m of text.matchAll(RUN_RE)) {
+    out.push({
+      raw: m[0],
+      start: m.index,
+      end: m.index + m[0].length,
+      groups: m[0].split(/\D+/).filter((g) => g !== ''),
+    });
   }
   return out;
+}
+
+// "3 30", "10 15", "9 0 5": an hour 1-12 and minutes 00-59, spaced like a spoken time.
+function looksLikeClockTime(r: Run): boolean {
+  const [h, a, b] = r.groups;
+  if (!/^\d+ \d+( \d+)?$/.test(r.raw)) return false;
+  const hour = Number(h);
+  if (hour < 1 || hour > 12 || (h ?? '').length > 2) return false;
+  if (r.groups.length === 2) return /^\d{2}$/.test(a ?? '') && Number(a) <= 59;
+  return r.groups.length === 3 && a === '0' && /^\d$/.test(b ?? '');
+}
+
+// Digit runs that are facts. `sentence` gives context: a spoken clock time is only a time
+// when the sentence talks about time and not about an identifier.
+function factRuns(text: string, sentence: string): { raw: string; norm: string }[] {
+  const out: { raw: string; norm: string }[] = [];
+  for (const r of findRuns(text)) {
+    const norm = r.groups.join('');
+    if (norm.length < 3) continue;
+    const before = text.slice(Math.max(0, r.start - 24), r.start);
+    const after = text.slice(r.end, r.end + 40);
+    if (TOLL_FREE.has(norm.replace(/^1/, '')) && TOLL_FREE_AFTER_RE.test(after)) continue;
+    if (
+      looksLikeClockTime(r) &&
+      (TIME_PREP_BEFORE_RE.test(before) || TIME_CONTEXT_RE.test(sentence)) &&
+      !ID_CONTEXT_RE.test(sentence)
+    ) {
+      continue;
+    }
+    const year = Number(norm);
+    if (
+      norm.length === 4 &&
+      r.groups.length <= 2 &&
+      year >= 1900 &&
+      year <= 2099 &&
+      YEAR_PREP_BEFORE_RE.test(before) &&
+      !BIRTH_CONTEXT_RE.test(sentence)
+    ) {
+      continue;
+    }
+    // "10, 15 minutes", "10-15 minutes", "In 5, 10, or 15 minutes": a list or range of
+    // quantities, not one number. Only for comma/dash lists in non-identifier talk.
+    if (
+      r.groups.length > 1 &&
+      r.groups.length <= 3 &&
+      r.groups.every((g) => g.length <= 3) &&
+      QUANTITY_LIST_RE.test(r.raw) &&
+      UNIT_AFTER_RE.test(after) &&
+      !ID_CONTEXT_RE.test(sentence)
+    ) {
+      for (const g of r.groups) if (g.length >= 3) out.push({ raw: g, norm: g });
+      continue;
+    }
+    out.push({ raw: r.raw, norm });
+  }
+  return out;
+}
+
+// Every digit run, whole, with no classification (used for ledger read-back forms).
+function plainRuns(text: string): string[] {
+  return findRuns(text)
+    .map((r) => r.groups.join(''))
+    .filter((n) => n.length >= 3);
 }
 
 // Order matters: emails, then dates, then times/ordinals are masked before digit runs,
@@ -398,11 +572,13 @@ function digitRuns(text: string): { raw: string; norm: string }[] {
 export function extractFacts(sentence: string): ExtractedFact[] {
   const emails: ExtractedFact[] = [];
   const dates: ExtractedFact[] = [];
-  let t = extractEmails(sentence, emails);
+  const prepared = prepareText(sentence);
+  let t = extractEmails(prepared, emails);
   t = normalizeNumbers(t);
+  const context = t;
   t = extractDates(t, dates);
   t = maskTimes(t);
-  const digits: ExtractedFact[] = digitRuns(t).map((r) => ({
+  const digits: ExtractedFact[] = factRuns(t, context).map((r) => ({
     kind: 'digits',
     raw: r.raw.trim(),
     norm: r.norm,
@@ -419,22 +595,25 @@ class Ledger implements FactLedger {
   private readonly dates = new Set<string>();
   private readonly emails = new Set<string>();
 
-  add(text: string): void {
+  add(text: string, source: FactSource = 'user'): void {
     if (!text) return;
-    for (const f of extractFacts(text)) this.addFact(f);
+    for (const f of extractFacts(text)) this.addFact(f, source);
     // Also allow every digit run of the text read without date/time masking, so a
     // number that happened to parse as a date or time can still be read back digit by
-    // digit ("12-04-77" → "120477", "9:15" → "915").
-    for (const r of digitRuns(normalizeNumbers(text))) this.digits.add(r.norm);
+    // digit ("12-04-77" → "120477", "9:15" → "915"). Whole runs only.
+    for (const n of plainRuns(normalizeNumbers(prepareText(text)))) this.digits.add(n);
   }
 
-  private addFact(f: ExtractedFact): void {
+  private addFact(f: ExtractedFact, source: FactSource): void {
     if (f.kind === 'email') {
       this.emails.add(f.norm);
       return;
     }
     if (f.kind === 'digits') {
-      this.addWithSubstrings(f.norm);
+      // Slices of the user's own numbers are fine to read back ("the last four are
+      // 0477"); slices of a number the other party said are not facts we were given.
+      if (source === 'user') this.addWithSubstrings(f.norm);
+      else this.digits.add(f.norm);
       return;
     }
     this.dates.add(f.norm);
@@ -512,11 +691,11 @@ const NUMBER_WORDS = new Set([
   'hundred',
   'thousand',
 ]);
-const LAST_TOKEN_RE = /([A-Za-z]+|\d)[^A-Za-z\d]*$/;
-const FIRST_TOKEN_RE = /^[^A-Za-z\d]*([A-Za-z]+|\d)/;
+const LAST_TOKEN_RE = /(\p{L}+|\p{Nd})[^\p{L}\p{Nd}]*$/u;
+const FIRST_TOKEN_RE = /^[^\p{L}\p{Nd}]*(\p{L}+|\p{Nd})/u;
 
 function numberish(token: string | undefined): boolean {
-  return !!token && (/\d/.test(token) || NUMBER_WORDS.has(token.toLowerCase()));
+  return !!token && (/\p{Nd}/u.test(token) || NUMBER_WORDS.has(token.toLowerCase()));
 }
 
 // Cuts a streaming buffer into complete sentences. A terminator only counts once the
