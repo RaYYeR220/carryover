@@ -9,6 +9,7 @@ export class FakeCaptions implements CaptionsLike {
   readonly contexts: string[] = [];
   readonly keytermUpdates: string[][] = [];
   closeCalls = 0;
+  sendAudioThrows = false;
   connectBehavior: 'ready' | 'reject' = 'ready';
 
   constructor(opts: CaptionsOptions) {
@@ -17,13 +18,17 @@ export class FakeCaptions implements CaptionsLike {
 
   connect(): Promise<void> {
     if (this.connectBehavior === 'reject') {
-      return Promise.reject(new Error('captions connect failed'));
+      // Like a real ws: the socket 'error' reaches onError and rejects connect().
+      const err = new Error('captions connect failed');
+      this.opts.onError(err);
+      return Promise.reject(err);
     }
     return Promise.resolve();
   }
 
   sendAudio(mu800: Buffer): void {
     this.audio.push(Buffer.from(mu800));
+    if (this.sendAudioThrows) throw new Error('socket write failed');
   }
 
   setAgentContext(text: string): void {

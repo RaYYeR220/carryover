@@ -155,6 +155,37 @@ describe('PoliteQueue', () => {
     expect(h.spoken.map((s) => s.nonce)).toEqual([nonce]);
   });
 
+  it('the 8 s clock is not reset by brief agent activity after each of their turns', () => {
+    // A chatty line: they talk non-stop, and after each turn the agent is briefly busy.
+    const h = harness();
+    themTalking(h)();
+    const start = h.now();
+    const [nonce] = h.q.push('I have to go now.');
+    const busy = (t: number) => (t >= 2000 && t < 3300) || (t >= 6000 && t < 7300);
+    h.advance(7900, () => {
+      themTalking(h)();
+      h.line.agent = busy(h.now() - start);
+    });
+    expect(h.spoken).toEqual([]);
+    h.advance(100, themTalking(h));
+    expect(h.spoken.map((s) => s.nonce)).toEqual([nonce]); // at 8.0 s, not 8 s after 7.3 s
+  });
+
+  it('when the agent is still talking at 8 s, it goes as soon as the agent stops', () => {
+    const h = harness();
+    themTalking(h)();
+    const start = h.now();
+    h.q.push('Now, please.');
+    h.advance(9000, () => {
+      themTalking(h)();
+      h.line.agent = h.now() - start >= 7000;
+    });
+    expect(h.spoken).toEqual([]);
+    h.line.agent = false;
+    h.advance(100, themTalking(h));
+    expect(h.spoken).toHaveLength(1);
+  });
+
   it('trims, keeps emoji, collapses newlines and rejects empty or whitespace-only text', () => {
     const h = harness();
     expect(h.q.push('')).toEqual([]);

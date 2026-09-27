@@ -62,6 +62,28 @@ describe('LineStateTracker keyword heuristics', () => {
     expect(t.state).toBe('human');
   });
 
+  it.each([
+    ["You've reached City Clinic.", 'ivr'],
+    ['You have reached Northstar Bank.', 'ivr'],
+    ['This is Riverside Pharmacy.', 'connecting'],
+  ])('a business name or a recording opener is not a person: %s', (text, expected) => {
+    const { t } = tracker('connecting');
+    t.onFinalTurn(text, true);
+    expect(t.state).toBe(expected);
+  });
+
+  it('"This is Dana." is a person', () => {
+    const { t } = tracker('connecting');
+    t.onFinalTurn('This is Dana.', true);
+    expect(t.state).toBe('human');
+  });
+
+  it('a recording opener does not turn voicemail back into a menu', () => {
+    const { t } = tracker('voicemail');
+    t.onFinalTurn("You've reached Dr. Patel's office.", false);
+    expect(t.state).toBe('voicemail');
+  });
+
   it('a lower-case "this is a recording" is not a person introducing themselves', () => {
     const { t } = tracker('ivr');
     t.onFinalTurn('this is a recording', false);

@@ -14,9 +14,12 @@ const HOLD_RE =
 const VOICEMAIL_RE =
   /leave (a|your) message|after the (tone|beep)|voice ?mail|not available to take your call|mailbox/i;
 // A person introducing themselves by name. The name must be capitalized (captions are
-// formatted), so "this is a recording" does not count.
-const HUMAN_NAME_RE = /\b(?:[Tt]his is|[Mm]y name is|[Yy]ou(?:'|’)ve reached) [A-Z][a-z]+/;
+// formatted), so "this is a recording" does not count, and must not be followed by
+// another capitalized word: "This is Riverside Pharmacy" is a business, not a person.
+const HUMAN_NAME_RE = /\b(?:[Tt]his is|[Mm]y name is) [A-Z][a-z]+\b(?![ -][A-Z])/;
 const HUMAN_RE = /how (can|may) i help|speaking[,.]|who am i speaking/i;
+// "You've reached City Clinic." is how recordings open (menus, voicemail greetings).
+const RECORDING_RE = /\byou(?:'|’)?ve reached\b|\byou have reached\b/i;
 // Someone answering a ringing line with a greeting.
 const GREETING_RE = /^\s*(hello|hi|hey|good (morning|afternoon|evening))\b/i;
 
@@ -94,6 +97,7 @@ function classify(
   if (VOICEMAIL_RE.test(text)) return 'voicemail';
   if (HOLD_RE.test(text)) return 'hold';
   if (HUMAN_NAME_RE.test(text) || HUMAN_RE.test(text)) return 'human';
+  if (RECORDING_RE.test(text)) return cur === 'voicemail' ? undefined : 'ivr';
   if (speakerIsNew && (cur === 'ivr' || cur === 'hold')) return 'human';
   if (cur === 'hold' && holdFromHuman) return 'human';
   if ((cur === 'connecting' || cur === 'ringing') && GREETING_RE.test(text)) return 'human';

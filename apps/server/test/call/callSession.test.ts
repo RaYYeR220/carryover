@@ -205,11 +205,17 @@ describe('CallSession start', () => {
   });
 
   it('a Voice Agent connect failure ends the call without opening captions', async () => {
-    const { session, leg, vaF, capF } = await setup({
+    // The fake, like a real ws, fires onClose synchronously as connect() fails: that
+    // close must not end the call before start() can reject.
+    const { session, leg, vaF, capF, events } = await setup({
       start: false,
       va: { connectBehavior: 'reject' },
     });
     await expect(session.start()).rejects.toThrow('va connect failed');
+    expect(all(events, 'error')).toHaveLength(1);
+    expect(all(events, 'alert').find((a) => a.kind === 'call-ended')?.message).toBe(
+      'Call ended: it could not be started.',
+    );
     expect(vaF.last.endCalls).toBe(1);
     expect(capF.created).toHaveLength(0);
     expect(leg.startCalls).toBe(0);
@@ -553,7 +559,7 @@ describe('CallSession agent audio', () => {
 });
 
 describe('CallSession tools', () => {
-  it('press_keys → DTMF through the pacer after the reply, dtmf event, tool.result after reply.done', async () => {
+  it('press_keys → DTMF through the pacer after the reply, tool.result after reply.done, dtmf event when the tones play', async () => {
     const { va, leg, events } = await setup();
     va.emit({ type: 'reply.started', reply_id: 'r1' });
     va.emit({
@@ -562,14 +568,17 @@ describe('CallSession tools', () => {
       name: 'press_keys',
       arguments: { digits: '2' },
     });
-    expect(one(events, 'dtmf').digits).toBe('2');
+    expect(all(events, 'dtmf')).toEqual([]); // not playing yet
     expect(va.toolResults).toEqual([]);
     va.emit({ type: 'reply.done', reply_id: 'r1', status: 'completed' });
     expect(va.toolResults).toEqual([
       { callId: 'call_1', result: { status: 'pressed', digits: '2' }, isError: false },
     ]);
     expect(leg.dtmf).toEqual([]); // tones are paced like speech, not dumped via sendDtmf
-    await advance(300);
+    expect(all(events, 'dtmf')).toEqual([]);
+    await advance(100);
+    expect(one(events, 'dtmf').digits).toBe('2'); // first tone chunk just went out
+    await advance(200);
     expect(leg.sentBytes).toEqual(dtmfMulaw('2'));
   });
 
@@ -904,8 +913,8 @@ describe('CallSession Brain view and commands', () => {
   it('keys go out as paced DTMF with a dtmf event; hangup ends the call', async () => {
     const { session, leg, events } = await setup();
     session.handleCommand({ t: 'keys', digits: '12#' });
-    expect(one(events, 'dtmf').digits).toBe('12#');
     await advance(1000);
+    expect(one(events, 'dtmf').digits).toBe('12#');
     expect(leg.sentBytes).toEqual(dtmfMulaw('12#'));
     session.handleCommand({ t: 'hangup' });
     await advance(0);
@@ -962,5 +971,205 @@ describe('CallSession practice line', () => {
       'who is unable to speak on the phone and',
     );
     expect(disclosureText('Sam', 'prefers-text')).toContain('who is using text and');
+  });
+});
+
+describe('CallSession hardening (review round 1)', () => {
+  it('a number the other party said unlocks only that whole number; the VA transcript is not evidence', async () => {
+    const { session, va, cap } = await setup();
+    const ok = (x: string) => checkSentence(x, session.brainView().ledger).ok;
+    cap.final(0, 'Your reference number is 4471 2290.', 'A');
+    expect(ok('The reference is 4471 2290.')).toBe(true);
+    expect(ok('It ends in 2290.')).toBe(false);
+    expect(ok('It starts with 4471.')).toBe(false);
+
+    va.emit({ type: 'transcript.user', text: 'My extension is 5561.' });
+    expect(ok('Her extension is 5561.')).toBe(false);
+  });
+
+  it('the VA transcript still ends a tool loop', async () => {
+    const { session, va } = await setup();
+    for (const id of ['t1', 't2']) {
+      va.emit({
+        type: 'tool.call',
+        call_id: id,
+        name: 'set_line_state',
+        arguments: { state: 'ivr' },
+      });
+    }
+    expect(session.brainView().onToolLoopDepth()).toBe(2);
+    va.emit({ type: 'transcript.user', text: 'Okay.' });
+    expect(session.brainView().onToolLoopDepth()).toBe(0);
+  });
+
+  it('typed text gets out within 8.5 s on a chatty line (3 s bursts, 1 s pauses, silent auto-replies)', async () => {
+    const { session, va, cap } = await setup();
+    const plan = new Map<number, (() => void)[]>();
+    const at = (t: number, fn: () => void) => plan.set(t, [...(plan.get(t) ?? []), fn]);
+    const line = 'And then we also checked the other thing.';
+    for (let k = 0; k < 5; k++) {
+      const b = k * 4000;
+      at(b, () => va.emit({ type: 'input.speech.started' }));
+      for (let p = 0; p < 3000; p += 300) at(b + p, () => cap.partial(k, 'And then we also', 'A'));
+      at(b + 3000, () => {
+        cap.final(k, line, 'A');
+        va.emit({ type: 'input.speech.stopped' });
+        va.emit({ type: 'transcript.user', text: line });
+        // AAI's turn reply; the Brain answers it with nothing while text is queued.
+        va.emit({ type: 'reply.started', reply_id: `auto${k}` });
+      });
+      at(b + 4300, () =>
+        va.emit({ type: 'reply.done', reply_id: `auto${k}`, status: 'completed' }),
+      );
+    }
+    const sayAt = 500;
+    at(sayAt, () => session.handleCommand({ t: 'say', text: 'Sorry, I have to go now.' }));
+
+    let spokenAt: number | undefined;
+    for (let t = 0; t <= 20_000 && spokenAt === undefined; t += 100) {
+      for (const fn of plan.get(t) ?? []) fn();
+      await advance(100);
+      if (va.replyCreates.length > 0) spokenAt = t + 100;
+    }
+    expect(spokenAt).toBeDefined();
+    expect((spokenAt ?? Number.POSITIVE_INFINITY) - sayAt).toBeLessThanOrEqual(8500);
+  });
+
+  it('a silent auto-reply in flight does not hold typed text; one producing audio does', async () => {
+    const { session, va, cap } = await setup();
+    cap.final(0, 'Okay, go ahead.', 'A');
+    va.emit({ type: 'reply.started', reply_id: 'auto0' }); // the Brain will answer nothing
+    await advance(800);
+    session.handleCommand({ t: 'say', text: 'First.' });
+    expect(va.replyCreates).toHaveLength(1);
+    va.emit({ type: 'reply.done', reply_id: 'auto0', status: 'completed' });
+    va.emit({ type: 'reply.started', reply_id: 'mine' });
+    va.emit({ type: 'reply.done', reply_id: 'mine', status: 'completed' });
+
+    va.emit({ type: 'reply.started', reply_id: 'auto1' });
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'auto1',
+      data: Buffer.alloc(800, 1).toString('base64'),
+    });
+    session.handleCommand({ t: 'say', text: 'Second.' });
+    await advance(500);
+    expect(va.replyCreates).toHaveLength(1);
+    va.emit({ type: 'reply.done', reply_id: 'auto1', status: 'completed' });
+    await advance(200);
+    expect(va.replyCreates).toHaveLength(2);
+  });
+
+  it('a "person" that turns out to be a voicemail greeting within 10 s: disclosure withdrawn, re-armed for the real pickup', async () => {
+    const { session, va, cap, events } = await setup();
+    cap.final(0, 'Hi, this is Dana.', 'A');
+    expect(session.lineState).toBe('human');
+    cap.final(1, 'Please leave a message after the tone.', 'A');
+    expect(session.lineState).toBe('voicemail');
+    await advance(3000);
+    expect(va.replyCreates).toEqual([]); // nothing spoken into the voicemail
+
+    cap.final(2, 'Hello? Sorry, this is Dana, I just picked up.', 'B');
+    expect(session.lineState).toBe('human');
+    expect(alertKinds(events).filter((k) => k === 'human-picked-up')).toHaveLength(2);
+    await advance(1000);
+    expect(va.replyCreates).toHaveLength(1);
+    expect(session.brainView().takeNonce(va.nonces[0] ?? '')).toBe(DISCLOSURE);
+  });
+
+  it('the disclosure is re-armed once only, and not after a real conversation', async () => {
+    const { session, va, cap } = await setup();
+    cap.final(0, 'Hi, this is Dana.', 'A');
+    await advance(11_000); // disclosure spoken; a real conversation
+    expect(va.replyCreates).toHaveLength(1);
+    session.brainView().takeNonce(va.nonces[0] ?? '');
+    cap.final(1, 'Please leave a message after the tone.', 'A');
+    cap.final(2, 'This is Marcus, how can I help?', 'B');
+    await advance(2000);
+    expect(va.replyCreates).toHaveLength(1);
+  });
+
+  it('an interrupted reply drops only its own speech, never tones queued around it', async () => {
+    const { session, va, leg } = await setup();
+    session.handleCommand({ t: 'keys', digits: '1234567890' }); // 16,000 bytes of tones
+    await advance(300);
+    va.emit({ type: 'reply.started', reply_id: 'r1' });
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'r1',
+      data: Buffer.alloc(1600, 0x55).toString('base64'),
+    });
+    va.emit({ type: 'reply.done', reply_id: 'r1', status: 'interrupted' });
+    await advance(3000);
+    expect(leg.sentBytes).toEqual(dtmfMulaw('1234567890'));
+  });
+
+  it('an interrupted reply keeps the earlier reply still playing', async () => {
+    const { va, leg } = await setup();
+    const first = Buffer.alloc(2400, 0x11);
+    va.emit({ type: 'reply.started', reply_id: 'r1' });
+    va.emit({ type: 'reply.audio', reply_id: 'r1', data: first.toString('base64') });
+    va.emit({ type: 'reply.done', reply_id: 'r1', status: 'completed' });
+    va.emit({ type: 'reply.started', reply_id: 'r2' });
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'r2',
+      data: Buffer.alloc(800, 0x22).toString('base64'),
+    });
+    va.emit({ type: 'reply.done', reply_id: 'r2', status: 'interrupted' });
+    await advance(1000);
+    expect(leg.sentBytes).toEqual(first);
+  });
+
+  it('skips an identical press_keys repeated within 5 s', async () => {
+    const { va, leg } = await setup();
+    const press = (id: string) =>
+      va.emit({ type: 'tool.call', call_id: id, name: 'press_keys', arguments: { digits: '2' } });
+    press('p1');
+    await advance(2000);
+    press('p2');
+    expect(va.toolResults.map((r) => r.result)).toEqual([
+      { status: 'pressed', digits: '2' },
+      { status: 'already_pressed', digits: '2' },
+    ]);
+    await advance(1000);
+    expect(leg.sentBytes).toEqual(dtmfMulaw('2'));
+    await advance(3000);
+    press('p3'); // 6 s after the first: a real second press
+    expect(va.toolResults.at(-1)?.result).toEqual({ status: 'pressed', digits: '2' });
+  });
+
+  it('a reply that stalls without reply.done drops its tool results and unblocks later ones', async () => {
+    const { va } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'r1' });
+    va.emit({
+      type: 'tool.call',
+      call_id: 'stuck',
+      name: 'note_commitment',
+      arguments: { text: 'x' },
+    });
+    await advance(21_000);
+    va.emit({
+      type: 'tool.call',
+      call_id: 'next',
+      name: 'set_line_state',
+      arguments: { state: 'ivr' },
+    });
+    expect(va.toolResults.map((r) => r.callId)).toEqual(['next']);
+  });
+
+  it('a throwing Voice Agent send does not starve captions, and no chunk is re-sent', async () => {
+    const { leg, va, cap } = await setup();
+    va.sendAudioThrows = true;
+    for (let i = 1; i <= 3; i++) leg.emitAudio(Buffer.alloc(800, i));
+    expect(va.audio.map((b) => b[0])).toEqual([1, 2, 3]);
+    expect(cap.audio.map((b) => b[0])).toEqual([1, 2, 3]);
+  });
+
+  it('a throwing captions send does not starve the Voice Agent', async () => {
+    const { leg, va, cap } = await setup();
+    cap.sendAudioThrows = true;
+    for (let i = 1; i <= 3; i++) leg.emitAudio(Buffer.alloc(800, i));
+    expect(va.audio.map((b) => b[0])).toEqual([1, 2, 3]);
   });
 });

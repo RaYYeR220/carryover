@@ -14,6 +14,7 @@ export class FakeVoiceAgent implements VoiceAgentLike {
   endCalls = 0;
   connectBehavior: ConnectBehavior = 'ready';
   endBehavior: 'resolve' | 'hang' = 'resolve';
+  sendAudioThrows = false;
   private abortConnect: (() => void) | undefined;
   private readonly onEvent: (e: VAEvent) => void;
   private readonly onClose: (code: number, reason: string) => void;
@@ -33,7 +34,13 @@ export class FakeVoiceAgent implements VoiceAgentLike {
   }
 
   connect(): Promise<void> {
-    if (this.connectBehavior === 'reject') return Promise.reject(new Error('va connect failed'));
+    if (this.connectBehavior === 'reject') {
+      // Like a real ws: 'error' rejects connect(), then 'close' fires synchronously,
+      // before any awaiting caller has run.
+      const failed = Promise.reject(new Error('va connect failed'));
+      this.onClose(1006, '');
+      return failed;
+    }
     if (this.connectBehavior === 'hang') {
       // Like the real session: end() on a socket still connecting terminates it, and the
       // pending connect() rejects.
@@ -51,6 +58,7 @@ export class FakeVoiceAgent implements VoiceAgentLike {
 
   sendAudio(mu: Buffer): void {
     this.audio.push(Buffer.from(mu));
+    if (this.sendAudioThrows) throw new Error('socket write failed');
   }
 
   replyCreate(instructions: string): void {

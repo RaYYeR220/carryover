@@ -23,7 +23,7 @@ export interface QueueNotice {
 
 export interface PoliteQueueOptions {
   clearMs?: number; // silence needed after the other party's last audio
-  maxWaitMs?: number; // longest wait for the other party to pause, then speak anyway
+  maxWaitMs?: number; // longest wait at the front of the queue, then speak over them anyway
   now?: () => number;
 }
 
@@ -42,8 +42,7 @@ interface Item {
   nonce: string;
   text: string;
   urgent: boolean;
-  headSince?: number; // when it reached the front of the queue
-  waitFrom?: number; // start of the current wait on the other party (agent speech resets it)
+  headSince?: number; // when it reached the front of the queue (start of the force clock)
   notified?: QueueReason;
 }
 
@@ -114,13 +113,14 @@ export class PoliteQueue {
     const head = this.items[0];
     if (!head) return;
     if (this.sig.ready && !this.sig.ready()) {
-      head.headSince = now;
-      head.waitFrom = now;
+      head.headSince = now; // waiting for the line to connect doesn't count
       this.notifyHead(head, 'waiting-for-pause');
       return;
     }
+    // The force clock is never reset once running: on a chatty line the agent is "busy"
+    // for a moment after every turn, and resetting on that would postpone typed text
+    // indefinitely. The agent audibly speaking only defers it until the agent is done.
     if (head.headSince === undefined) head.headSince = now;
-    if (head.waitFrom === undefined || agent) head.waitFrom = now;
 
     let go: boolean;
     if (head.urgent) {
@@ -129,7 +129,7 @@ export class PoliteQueue {
       go = false;
     } else {
       const clear = !this.sig.themSpeaking() && this.sig.msSinceThemAudio() >= this.clearMs;
-      go = clear || now - head.waitFrom >= this.maxWaitMs;
+      go = clear || now - head.headSince >= this.maxWaitMs;
     }
     if (!go && now - head.headSince >= HARD_MAX_WAIT_MS) go = true;
 

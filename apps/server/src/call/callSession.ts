@@ -16,15 +16,15 @@ import {
 import type { AgentRegistry } from '../aai/agentRegistry.js';
 import type { CaptionsOptions, CaptionsStream, CaptionTurn } from '../aai/captions.js';
 import type { VAEvent, VoiceAgentSession } from '../aai/voiceAgent.js';
-import { dtmfMulaw } from '../audio/dtmf.js';
 import { rmsDbfs } from '../audio/level.js';
-import { CHUNK_BYTES, FrameAggregator, RealtimePacer } from '../audio/pacer.js';
+import { FrameAggregator } from '../audio/pacer.js';
 import { createLedger, type ExtractedFact, type FactLedger } from '../brain/factGate.js';
 import { type BrainCallView, RELAY_TOOLS } from '../brain/policy.js';
 import type { Config } from '../config.js';
 import type { PhoneLeg } from '../legs/phoneLeg.js';
 import type { LlmProvider } from '../llm/provider.js';
 import { LineStateTracker, spokenName } from './lineState.js';
+import { Outbound } from './outbound.js';
 import { PoliteQueue } from './politeQueue.js';
 import { SpeakerMap } from './speakers.js';
 import { summarize } from './summary.js';
@@ -33,6 +33,12 @@ import { summarize } from './summary.js';
 // and mouth; its LLM is our Relay Brain) plus a parallel Universal-3.5 Pro captions stream
 // for the user. Exposes AppEvents / AppCommands to the user's app and a BrainCallView to
 // the Brain.
+//
+// Known limits (documented, not handled):
+// - Hold "ads" read by a different voice (a new speaker label during hold) can look like
+//   a person picking up: false "human-picked-up" alerts and an early disclosure.
+// - For an interrupted reply the transcript keeps AAI's trimmed transcript.agent text,
+//   which can include words that were cut off before the other party heard them.
 
 export type VoiceAgentLike = Pick<
   VoiceAgentSession,
@@ -77,13 +83,13 @@ const VA_SPEECH_MAX_MS = 20_000; // input.speech.started without stopped is trus
 const REPLY_ACK_MS = 3000; // reply.create → reply.started, else the create was lost
 const REPLY_STALL_MS = 20_000; // a reply silent for this long is treated as over
 const END_DRAIN_MAX_MS = 15_000; // end_call: longest wait for the goodbye to play out
+const DISCLOSURE_REARM_MS = 10_000; // human → voicemail this fast: the "person" was a recording
+const REPEAT_PRESS_MS = 5000; // the same press_keys again this soon is a re-press, skipped
 const MAX_FACTS = 40;
 const MAX_KEYTERMS = 20;
 const MAX_KEYTERM_CHARS = 50;
 const MAX_FACT_WORDS = 6;
 const MIN_GOAL_WORD = 5;
-const CHUNK_MS = 100;
-const MULAW_SILENCE = 0xff;
 const LINE_STATES_FOR_TOOL = new Set<LineState>(['ivr', 'hold', 'human', 'voicemail']);
 const AUTOMATED_STATES = new Set<LineState>(['ivr', 'hold', 'voicemail']);
 
@@ -146,12 +152,19 @@ export class CallSession {
   private stateSince: number;
   private va: VoiceAgentLike | undefined;
   private captions: CaptionsLike | undefined;
-  private pacer: RealtimePacer | undefined;
+  private out: Outbound | undefined;
   private tickTimer: ReturnType<typeof setInterval> | undefined;
   private started = false;
   private ending = false;
   private connectedAt: number | undefined;
+  // Events from a Voice Agent / captions socket that never finished connecting are the
+  // connect's failure, handled by start()'s catch, not a call-ending event.
+  private vaConnected = false;
+  private captionsConnected = false;
   private disclosureQueued = false;
+  private disclosureRearmed = false;
+  private disclosureNonces: string[] = [];
+  private humanSince = 0;
 
   // Turn-taking signals.
   private vaSpeechActive = false;
@@ -161,6 +174,8 @@ export class CallSession {
   private lastWordsAt = Number.NEGATIVE_INFINITY;
   private awaitingReplyUntil = 0;
   private replyInFlight: string | undefined;
+  private replyHasAudio = false;
+  private ownReplyId: string | undefined;
   private lastReplyEventAt = 0;
 
   // Tool bookkeeping: results go out when reply.done is the latest reply event.
@@ -169,6 +184,7 @@ export class CallSession {
   private pendingDtmf: { digits: string; replyId: string }[] = [];
   private endAfterReply: { replyId?: string; readyAt?: number } | undefined;
   private toolLoopDepth = 0;
+  private lastPress: { digits: string; at: number } | undefined;
   private lastThemPerson: number | undefined;
   private lastFinalText = '';
 
@@ -203,7 +219,10 @@ export class CallSession {
       (ev) => this.emit({ t: 'relay.queued', ...ev }),
       { now: this.now },
     );
-    this.inbound = new FrameAggregator((chunk) => this.onInboundChunk(chunk));
+    // Guarded so a throw can never leave the chunk in the aggregator to be re-sent.
+    this.inbound = new FrameAggregator(
+      this.guard('inbound chunk', (chunk: Buffer) => this.onInboundChunk(chunk)),
+    );
     this.view = this.makeView();
 
     leg.onAudio(this.guard('leg audio', (mu: Buffer) => this.onLegAudio(mu)));
@@ -221,7 +240,12 @@ export class CallSession {
     this.started = true;
     if (this.ending) return;
     this.armTimer(() => void this.end('max-duration'), MAX_CALL_MS);
-    this.pacer = new RealtimePacer(this.guard('leg send', (c: Buffer) => this.leg.sendAudio(c)));
+    this.out = new Outbound(
+      this.guard('leg send', (c: Buffer) => this.leg.sendAudio(c)),
+      this.guard('dtmf start', (digits: string) =>
+        this.emit({ t: 'dtmf', digits, at: this.now() }),
+      ),
+    );
     this.tickTimer = setInterval(
       this.guard('tick', () => this.tick()),
       TICK_MS,
@@ -240,6 +264,7 @@ export class CallSession {
       );
       this.va = va;
       await va.connect();
+      this.vaConnected = true;
       if (this.ending) return;
 
       const captions = this.deps.makeCaptions({
@@ -253,6 +278,7 @@ export class CallSession {
       });
       this.captions = captions;
       await captions.connect();
+      this.captionsConnected = true;
       if (this.ending) return;
 
       this.line.force('ringing');
@@ -308,8 +334,8 @@ export class CallSession {
     this.timers.clear();
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = undefined;
-    this.pacer?.stop();
-    this.pacer?.clear();
+    this.out?.stop();
+    this.out?.clear();
     this.queue.clear();
     this.pendingTools = [];
     this.pendingDtmf = [];
@@ -531,6 +557,7 @@ export class CallSession {
     if (text === undefined) return undefined;
     const kind = this.nonceKinds.get(nonce) ?? 'relay';
     this.nonceKinds.delete(nonce);
+    if (this.replyInFlight !== undefined) this.ownReplyId = this.replyInFlight;
     this.spokenRelays.push({ text, kind });
     if (this.spokenRelays.length > 10) this.spokenRelays.shift();
     this.emit({ t: 'relay.spoken', nonce, at: this.now() });
@@ -566,18 +593,24 @@ export class CallSession {
         // Per-call routing: every Brain request carries this tag in messages[0].
         this.va?.updateSession({ system_prompt: `[[carryover-call:${this.id}]] relay session` });
         return;
-      case 'reply.started':
-        this.replyInFlight = str(e.reply_id) ?? 'unknown';
+      case 'reply.started': {
+        const id = str(e.reply_id) ?? 'unknown';
+        this.replyInFlight = id;
+        this.replyHasAudio = false;
+        // The reply our reply.create asked for.
+        if (now < this.awaitingReplyUntil) this.ownReplyId = id;
         this.lastReplyEventAt = now;
         this.awaitingReplyUntil = 0;
         this.lastVaEvent = 'reply.started';
         return;
+      }
       case 'reply.audio': {
         const id = str(e.reply_id);
         if (id && this.interruptedReplies.has(id)) return;
         if (typeof e.data !== 'string') return;
         this.lastReplyEventAt = now;
-        this.pacer?.enqueue(Buffer.from(e.data, 'base64'));
+        if (id === undefined || id === this.replyInFlight) this.replyHasAudio = true;
+        this.out?.speech(Buffer.from(e.data, 'base64'), id ?? this.replyInFlight);
         return;
       }
       case 'transcript.agent':
@@ -599,18 +632,14 @@ export class CallSession {
         this.vaSpeechActive = false;
         this.lastThemAt = now;
         return;
-      case 'transcript.user': {
-        // The Voice Agent's own transcript of the other party: also evidence, since that
-        // is the text the Brain's LLM sees.
+      case 'transcript.user':
+        // The Voice Agent's own transcript of the other party. Not evidence for the gate
+        // (only final captions are: a second STT would widen what can be "confirmed"),
+        // but it does mean they spoke, which ends a tool loop.
         this.vaSpeechActive = false;
         this.lastThemAt = now;
-        const text = str(e.text);
-        if (text) {
-          this.ledger.add(text);
-          this.toolLoopDepth = 0;
-        }
+        if (str(e.text)?.trim()) this.toolLoopDepth = 0;
         return;
-      }
       case 'session.error':
       case 'error':
         this.log('voice agent error', e);
@@ -621,7 +650,8 @@ export class CallSession {
   }
 
   private onVaClose(code: number, reason: string): void {
-    if (this.ending) return;
+    // Before connect() resolved, a close is the connect failing: start() rejects for it.
+    if (this.ending || !this.vaConnected) return;
     this.log('voice agent socket closed', { code, reason });
     void this.end('voice-agent-closed');
   }
@@ -656,17 +686,22 @@ export class CallSession {
   private onReplyDone(e: VAEvent, now: number): void {
     const id = str(e.reply_id) ?? this.replyInFlight;
     const interrupted = e.status === 'interrupted';
-    if (!id || id === this.replyInFlight) this.replyInFlight = undefined;
+    if (!id || id === this.replyInFlight) {
+      this.replyInFlight = undefined;
+      this.replyHasAudio = false;
+    }
+    if (id === this.ownReplyId) this.ownReplyId = undefined;
     this.lastReplyEventAt = now;
     this.lastVaEvent = 'reply.done';
 
     if (interrupted) {
       if (id) this.rememberInterrupted(id);
-      this.pacer?.clear();
+      // Only this reply's unplayed speech: queued tones and other audio keep going.
+      this.out?.dropReply(id);
       this.pendingTools = this.pendingTools.filter((t) => t.replyId !== id);
       if (this.endAfterReply?.replyId === id) this.endAfterReply = undefined;
     } else {
-      this.padPacer();
+      this.out?.padToChunk(id);
       if (this.endAfterReply && this.endAfterReply.replyId === id) this.endAfterReply.readyAt = now;
     }
     // Keys pressed in this reply go out after its speech, even if it was cut short: the
@@ -706,6 +741,13 @@ export class CallSession {
           .replace(/[^0-9*#]/g, '')
           .slice(0, 32);
         if (!digits) return fail('no valid keys: use 0-9, * and #');
+        // After an interrupted reply its result is dropped and AAI says "Do what is
+        // outstanding.": the model presses again. The menu already got the keys.
+        const last = this.lastPress;
+        if (last && last.digits === digits && now - last.at < REPEAT_PRESS_MS) {
+          return ok({ status: 'already_pressed', digits });
+        }
+        this.lastPress = { digits, at: now };
         this.queueDtmf(digits);
         return ok({ status: 'pressed', digits });
       }
@@ -769,37 +811,25 @@ export class CallSession {
   // ------------------------------------------------------------------ outbound audio
 
   // DTMF shares the paced outbound path with agent speech, so tones never overlap it.
-  // Keys pressed while a reply is in flight wait for that reply to finish.
+  // Keys pressed while a reply is in flight wait for that reply to finish. The dtmf
+  // AppEvent goes out when the tones start playing (Outbound's onDtmfStart).
   private queueDtmf(digits: string): void {
     if (this.replyInFlight !== undefined) {
       this.pendingDtmf.push({ digits, replyId: this.replyInFlight });
     } else {
-      this.padPacer();
-      this.pacer?.enqueue(dtmfMulaw(digits));
+      this.out?.dtmf(digits);
     }
-    this.emit({ t: 'dtmf', digits, at: this.now() });
   }
 
   private releaseDtmf(which: (d: { digits: string; replyId: string }) => boolean): void {
     const release = this.pendingDtmf.filter(which);
     if (release.length === 0) return;
     this.pendingDtmf = this.pendingDtmf.filter((d) => !which(d));
-    this.padPacer();
-    for (const d of release) this.pacer?.enqueue(dtmfMulaw(d.digits));
+    for (const d of release) this.out?.dtmf(d.digits);
   }
 
-  // The pacer only emits whole 100 ms chunks; pad a reply's tail with μ-law silence so
-  // its last syllable plays now instead of waiting for the next reply.
-  private padPacer(): void {
-    const p = this.pacer;
-    if (!p) return;
-    const bytes = Math.round((p.pendingMs * CHUNK_BYTES) / CHUNK_MS);
-    const rem = bytes % CHUNK_BYTES;
-    if (rem > 0) p.enqueue(Buffer.alloc(CHUNK_BYTES - rem, MULAW_SILENCE));
-  }
-
-  private pacerBusy(): boolean {
-    return (this.pacer?.pendingMs ?? 0) >= CHUNK_MS;
+  private outBusy(): boolean {
+    return this.out?.busy ?? false;
   }
 
   // ------------------------------------------------------------------ inbound audio
@@ -809,11 +839,24 @@ export class CallSession {
     this.inbound.push(mu);
   }
 
+  // Each sink on its own: a failing captions socket must not starve the Voice Agent.
   private onInboundChunk(chunk: Buffer): void {
     const now = this.now();
-    this.va?.sendAudio(chunk);
-    this.captions?.sendAudio(chunk);
-    this.line.onAudioLevel(rmsDbfs(chunk), now - this.lastWordsAt < WORDS_RECENT_MS, now);
+    try {
+      this.va?.sendAudio(chunk);
+    } catch (err) {
+      this.log('voice agent audio send failed', err);
+    }
+    try {
+      this.captions?.sendAudio(chunk);
+    } catch (err) {
+      this.log('captions audio send failed', err);
+    }
+    try {
+      this.line.onAudioLevel(rmsDbfs(chunk), now - this.lastWordsAt < WORDS_RECENT_MS, now);
+    } catch (err) {
+      this.log('audio level check failed', err);
+    }
   }
 
   // ------------------------------------------------------------------ captions
@@ -838,7 +881,8 @@ export class CallSession {
     this.lastThemPerson = person;
     this.lastFinalText = text;
     this.toolLoopDepth = 0;
-    this.ledger.add(text); // the other party's words may be repeated back
+    // The other party's words may be repeated back, but only whole numbers they said.
+    this.ledger.add(text, 'other');
     this.transcriptLog.push({ at: now, who: 'them', person, text });
 
     this.line.onFinalTurn(text, isNew);
@@ -884,6 +928,8 @@ export class CallSession {
   private onCaptionsError(e: Error): void {
     if (this.ending) return;
     this.log('captions error', e);
+    // A connect failure is reported once, by start().
+    if (!this.captionsConnected) return;
     this.emit({ t: 'error', message: `Captions problem: ${e.message}` });
   }
 
@@ -896,7 +942,11 @@ export class CallSession {
     if (to === 'ended') return;
     if (
       to === 'human' &&
-      (from === 'ivr' || from === 'hold' || from === 'connecting' || from === 'ringing')
+      (from === 'ivr' ||
+        from === 'hold' ||
+        from === 'voicemail' ||
+        from === 'connecting' ||
+        from === 'ringing')
     ) {
       const words = firstWords(this.lastFinalText);
       this.emit({
@@ -906,6 +956,15 @@ export class CallSession {
         at: now,
       });
     }
+    if (
+      from === 'human' &&
+      to === 'voicemail' &&
+      this.disclosureQueued &&
+      !this.disclosureRearmed &&
+      now - this.humanSince <= DISCLOSURE_REARM_MS
+    ) {
+      this.rearmDisclosure();
+    }
     if (to === 'voicemail') {
       this.emit({
         t: 'alert',
@@ -914,14 +973,31 @@ export class CallSession {
         at: now,
       });
     }
-    if (to === 'human') this.queueDisclosure();
+    if (to === 'human') {
+      this.humanSince = now;
+      this.queueDisclosure();
+    }
   }
 
   private queueDisclosure(): void {
     if (this.disclosureQueued || this.ending || this.connectedAt === undefined) return;
     this.disclosureQueued = true;
     const nonces = this.queue.push(disclosureText(this.req.userName, this.req.userDescriptor));
+    this.disclosureNonces = nonces;
     for (const n of nonces) this.nonceKinds.set(n, 'disclosure');
+  }
+
+  // The "person" was a recording (a voicemail greeting soon after): withdraw the
+  // disclosure if it has not been picked up yet and allow it once more for the next real
+  // person, who would otherwise never hear it.
+  private rearmDisclosure(): void {
+    this.disclosureRearmed = true;
+    this.disclosureQueued = false;
+    for (const n of this.disclosureNonces) {
+      this.queue.take(n);
+      this.nonceKinds.delete(n);
+    }
+    this.disclosureNonces = [];
   }
 
   // ------------------------------------------------------------------ turn-taking
@@ -932,12 +1008,15 @@ export class CallSession {
     return now - this.lastPartialAt < PARTIAL_SPEAKING_MS;
   }
 
-  // From reply.create (or reply.started) until the reply is done and its audio has
-  // played out.
+  // The agent is audibly busy: our reply.create is on its way, our own reply is in flight,
+  // a reply is producing audio, or audio is still playing out. A silent auto-reply (AAI
+  // starts one after every turn of the other party; the Brain answers it with nothing)
+  // does not count, or a chatty line would keep typed text waiting indefinitely.
   private agentSpeaking(): boolean {
-    return (
-      this.now() < this.awaitingReplyUntil || this.replyInFlight !== undefined || this.pacerBusy()
-    );
+    if (this.now() < this.awaitingReplyUntil) return true;
+    const r = this.replyInFlight;
+    if (r !== undefined && (r === this.ownReplyId || this.replyHasAudio)) return true;
+    return this.outBusy();
   }
 
   private speakRelay(nonce: string, _text: string): void {
@@ -949,16 +1028,30 @@ export class CallSession {
     if (this.ending) return;
     const now = this.now();
     if (this.replyInFlight !== undefined && now - this.lastReplyEventAt > REPLY_STALL_MS) {
-      this.log('reply went quiet without reply.done; treating it as over', this.replyInFlight);
-      const stalled = this.replyInFlight;
-      this.replyInFlight = undefined;
-      this.releaseDtmf((d) => d.replyId === stalled);
+      this.recoverStalledReply(now);
     }
     this.queue.tick(now);
     const readyAt = this.endAfterReply?.readyAt;
-    if (readyAt !== undefined && (!this.pacerBusy() || now - readyAt > END_DRAIN_MAX_MS)) {
+    if (readyAt !== undefined && (!this.outBusy() || now - readyAt > END_DRAIN_MAX_MS)) {
       void this.end('agent-ended');
     }
+  }
+
+  // A reply that went quiet without reply.done: treat it as over. Its tool results can no
+  // longer be delivered at the right moment, so they are dropped (like an interrupted
+  // reply's); keys it pressed still go out, and an end_call in it still ends the call.
+  private recoverStalledReply(now: number): void {
+    const stalled = this.replyInFlight;
+    this.log('reply went quiet without reply.done; treating it as over', stalled);
+    this.replyInFlight = undefined;
+    this.replyHasAudio = false;
+    if (stalled === this.ownReplyId) this.ownReplyId = undefined;
+    if (this.lastVaEvent === 'reply.started') this.lastVaEvent = 'reply.done';
+    this.pendingTools = this.pendingTools.filter((t) => t.replyId !== stalled);
+    const ending = this.endAfterReply;
+    if (ending && ending.replyId === stalled) ending.readyAt = now;
+    this.releaseDtmf((d) => d.replyId === stalled);
+    this.flushToolResults();
   }
 
   // ------------------------------------------------------------------ helpers
