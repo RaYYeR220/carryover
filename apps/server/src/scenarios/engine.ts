@@ -249,6 +249,9 @@ interface RepSession {
   node: RepNode;
   person: number;
   ready: boolean;
+  // The socket closed before connect() settled (a failed connect closes synchronously,
+  // ahead of the rejection): the connect outcome decides what happens.
+  closedEarly?: string;
   heardAudio: boolean;
   lastEvent: 'reply.started' | 'reply.done' | 'input.speech.started';
 }
@@ -581,6 +584,11 @@ export class ScenarioEngine {
     va.connect().then(
       () => {
         if (this.rep !== current || this.stopped) return;
+        if (current.closedEarly !== undefined) {
+          this.record(node.id, 'rep-closed', current.closedEarly);
+          this.endCall('rep-disconnected');
+          return;
+        }
         current.ready = true;
         this.record(node.id, 'rep-ready', va.sessionId);
       },
@@ -686,6 +694,10 @@ export class ScenarioEngine {
 
   private onRepClose(rep: RepSession, code: number, reason: string): void {
     if (this.rep !== rep || this.stopped) return;
+    if (!rep.ready) {
+      rep.closedEarly = `${code} ${reason}`.trim();
+      return;
+    }
     this.record(rep.node.id, 'rep-closed', `${code} ${reason}`.trim());
     this.rep = undefined;
     this.endCall('rep-disconnected');

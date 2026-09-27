@@ -393,18 +393,44 @@ describe('ScenarioEngine: representative', () => {
     expect(t.ended).toEqual(['rep-disconnected']);
   });
 
-  it('a rep that cannot connect ends the call', async () => {
+  it('a rep that cannot connect ends the call (its socket closes before connect rejects)', async () => {
+    const created: FakeVoiceAgent[] = [];
     const t = setup('lakeview-dental', {
       makeVoiceAgent: (_s, onEvent, onClose) => {
         const va = new FakeVoiceAgent('inline', onEvent, onClose);
         va.connectBehavior = 'reject';
+        created.push(va);
         return va;
       },
     });
     t.engine.start();
     await advance(10);
-    expect(t.events('rep-error')).toHaveLength(1);
+    expect(t.events('rep-error')).toEqual([
+      expect.objectContaining({ node: 'priya', detail: 'va connect failed' }),
+    ]);
+    expect(t.events('rep-closed')).toEqual([]);
     expect(t.ended).toEqual(['scenario-error']);
+    expect(created[0]?.endCalls).toBe(1); // still closed on the way out
+  });
+
+  it('a rep socket that closes right after connecting ends the call as a disconnect', async () => {
+    class ClosesAfterReady extends FakeVoiceAgent {
+      override connect(): Promise<void> {
+        const ready = super.connect();
+        this.close(1011, 'server error');
+        return ready;
+      }
+    }
+    const t = setup('lakeview-dental', {
+      makeVoiceAgent: (_s, onEvent, onClose) => new ClosesAfterReady('inline', onEvent, onClose),
+    });
+    t.engine.start();
+    await advance(10);
+    expect(t.events('rep-ready')).toEqual([]);
+    expect(t.events('rep-closed')).toEqual([
+      expect.objectContaining({ node: 'priya', detail: '1011 server error' }),
+    ]);
+    expect(t.ended).toEqual(['rep-disconnected']);
   });
 
   it('dental starts straight at Priya with the morning slot offered first', () => {
