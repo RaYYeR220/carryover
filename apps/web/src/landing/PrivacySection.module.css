@@ -1,0 +1,190 @@
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 6fr) minmax(0, 6fr);
+  gap: var(--s8);
+  align-items: center;
+}
+
+.promises {
+  margin: 0;
+  border-top: 1px solid var(--hair);
+}
+
+.promises li {
+  padding: var(--s5) 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.promises h3 {
+  font: 400 26px / 1.2 var(--display);
+  letter-spacing: -0.015em;
+  margin: 0 0 8px;
+}
+
+.promises p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 17px;
+  max-width: 30em;
+}
+
+.askStage {
+  position: relative;
+  isolation: isolate;
+  background: var(--night);
+  color: var(--on);
+  border-radius: var(--r6);
+  padding: 40px;
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  --cap: 20px;
+}
+
+/* ---------- the ask card (self-contained: shared with Captions.module.css's
+   compact version only in visual language, not by CSS composition) ---------- */
+.ask {
+  position: relative;
+  z-index: 1;
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: var(--r4);
+  padding: 20px 22px 18px;
+  box-shadow: 0 20px 60px -20px rgb(0 0 0 / 0.8);
+}
+
+.askH {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 700 18px / 1.25 var(--sans);
+}
+
+.ldot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--signal);
+  flex: none;
+  box-shadow: 0 0 0 4px rgb(227 36 43 / 0.14);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+.askH small {
+  margin-left: auto;
+  font: 500 14px / 1 var(--sans);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.askNote {
+  margin: 10px 0 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.askActs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.btnInk,
+.btnQuiet {
+  height: 48px;
+  padding: 0 16px;
+  border-radius: var(--pill);
+  font: 700 16px / 1 var(--sans);
+  width: 100%;
+  border: 0;
+}
+
+.btnInk {
+  grid-column: 1 / -1;
+  height: 54px;
+  font-size: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 0 20px;
+  background: #000;
+  color: #fff;
+}
+
+.btnInk small {
+  font: 500 13px / 1 var(--sans);
+  color: #bdbdbd;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #262626;
+  border-radius: 999px;
+  padding: 8px 10px;
+}
+
+.btnQuiet {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.btnQuiet:hover {
+  background: var(--paper-3);
+}
+
+.askSrc {
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.askSrc::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1.5px var(--ink-3);
+  flex: none;
+  background:
+    radial-gradient(circle, var(--ink-3) 1.2px, transparent 1.5px) 50% 50% / 14px 14px no-repeat;
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (max-width: 860px) {
+  .grid {
+    grid-template-columns: 1fr;
+    gap: var(--s6);
+  }
+
+  .askStage {
+    padding: 20px 14px;
+    min-height: 0;
+    border-radius: var(--r5);
+  }
+
+  .ask {
+    padding: 18px 18px 16px;
+  }
+
+  .btnInk {
+    justify-content: center;
+  }
+
+  .btnInk small,
+  .askH small .w {
+    display: none;
+  }
+}

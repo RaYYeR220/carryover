@@ -1,0 +1,156 @@
+.stage {
+  position: relative;
+  margin: 0 var(--frame);
+  border-radius: var(--r6);
+  background: var(--night);
+  color: var(--on);
+  isolation: isolate;
+}
+
+.practice {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--s7);
+  align-items: center;
+  padding: clamp(56px, 7vw, 104px);
+  position: relative;
+}
+
+.h2 {
+  color: #fff;
+  max-width: 11em;
+  margin: 0;
+}
+
+.intro {
+  color: var(--on-2);
+  font-size: 19px;
+  line-height: 1.6;
+  max-width: 31em;
+  margin: var(--s5) 0 var(--s6);
+}
+
+.steps {
+  margin: 0;
+}
+
+.pstep {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: var(--s3);
+  padding: 14px 0;
+  border-top: 1px solid var(--night-line);
+  color: #e6e6e6;
+  max-width: 30em;
+}
+
+.pstep:last-of-type {
+  border-bottom: 1px solid var(--night-line);
+}
+
+.pstep b {
+  font: 900 18px / 1.4 var(--dot);
+  font-variation-settings: "ROND" 100;
+  color: var(--on-3);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--s6);
+  flex-wrap: wrap;
+  margin-top: var(--s6);
+}
+
+.tlink {
+  display: inline-block;
+  color: #fff;
+  font: 500 17px / 1.2 var(--sans);
+  text-decoration: underline;
+  text-underline-offset: 6px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgb(127 127 127 / 0.7);
+  padding: 8px 2px;
+}
+
+.tlink:hover {
+  text-decoration-color: currentcolor;
+}
+
+.qrWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s4);
+}
+
+.qrCard {
+  position: relative;
+  background: var(--paper);
+  border-radius: var(--r5);
+  padding: 22px;
+  box-shadow:
+    0 0 0 8px rgb(255 255 255 / 0.04),
+    0 30px 80px -20px rgb(0 0 0 / 0.9);
+}
+
+.qrCard canvas {
+  width: min(280px, 62vw);
+  height: auto;
+  aspect-ratio: 1;
+}
+
+.qrStatus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: #fff;
+}
+
+.qrCap {
+  margin: 0;
+  font-size: 15px;
+  color: var(--on-2);
+  text-align: center;
+  max-width: 22em;
+}
+
+.qrNote {
+  margin: 0;
+  font-size: 14px;
+  color: var(--on-3);
+  text-align: center;
+  max-width: 22em;
+}
+
+@media (max-width: 860px) {
+  .stage {
+    border-radius: var(--r5);
+  }
+
+  .practice {
+    grid-template-columns: 1fr;
+    padding: 56px 22px 40px;
+    gap: var(--s7);
+  }
+
+  .h2 {
+    max-width: none;
+    font-size: 38px;
+  }
+
+  .intro {
+    font-size: 17px;
+  }
+
+  .qrWrap {
+    order: -1;
+  }
+
+  .actions {
+    gap: var(--s5);
+  }
+}

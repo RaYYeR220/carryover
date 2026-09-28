@@ -1,0 +1,85 @@
+.heroDev {
+  position: relative;
+  width: min(940px, calc(100% - 64px));
+  margin: auto auto 0;
+  padding: 16px 22px 22px;
+  transition: box-shadow 90ms linear;
+}
+
+/* The pickup moment: a soft white glow, on top of the LED field's own flash.
+   Never applied under reduced motion (the phase never reaches 'pickup'). */
+.flash {
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.5),
+    0 0 60px 4px rgb(255 255 255 / 0.25);
+}
+
+.bar {
+  padding: 0 2px;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 318px minmax(0, 1fr);
+  gap: 28px;
+  margin-top: 14px;
+}
+
+.screen {
+  height: 232px;
+}
+
+.caps {
+  --cap: 23px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 6px;
+  min-height: 178px;
+}
+
+.caps > * {
+  animation: capIn var(--t-slow) var(--e-out) both;
+}
+
+@keyframes capIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (max-width: 1100px) {
+  .body {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 600px) and (max-width: 860px) {
+  .heroDev {
+    width: min(640px, calc(100% - 48px));
+    margin: 0 auto;
+  }
+}
+
+@media (max-width: 860px) {
+  .heroDev {
+    width: auto;
+    margin: 0 12px;
+    padding: 14px 14px 18px;
+  }
+
+  .body {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .screen {
+    height: 150px;
+  }
+
+  .caps {
+    --cap: 20px;
+    min-height: 0;
+  }
+}
