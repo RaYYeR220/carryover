@@ -1,0 +1,53 @@
+/* Shared section chrome: padding, the centred wrap, and the two-column head
+   (heading + intro) used by How, Autonomy and Privacy. */
+.sec {
+  padding: var(--s10) 0;
+}
+
+.wrap {
+  max-width: calc(var(--wrap) + var(--pad) * 2);
+  margin: 0 auto;
+  padding: 0 var(--pad);
+}
+
+.head {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--s7);
+  align-items: end;
+  margin-bottom: var(--s8);
+}
+
+.head p {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  max-width: 30em;
+  padding-bottom: 6px;
+}
+
+/* Section headings (paired with the global `t-h2` class). */
+.h2 {
+  margin: 0;
+}
+
+@media (max-width: 860px) {
+  .sec {
+    padding: 88px 0;
+  }
+
+  .head {
+    grid-template-columns: 1fr;
+    gap: var(--s4);
+    margin-bottom: var(--s6);
+  }
+
+  .head p {
+    font-size: 17px;
+  }
+
+  .h2 {
+    font-size: 38px;
+  }
+}
