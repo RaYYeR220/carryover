@@ -12,6 +12,10 @@ export interface QueueSignals {
   msSinceThemAudio(): number;
   // Optional: false while nothing can be spoken yet (the line is not connected).
   ready?(): boolean;
+  // Optional: true while the Voice Agent is still settling the other party's last turn.
+  // A reply.create sent then is merged into that turn's reply and cut off when the turn
+  // is committed, so nothing is sent, urgent text included -- for a bounded time.
+  settling?(): boolean;
 }
 
 export type QueueReason = 'waiting-for-pause' | 'agent-speaking';
@@ -37,6 +41,10 @@ const SENT_PENDING_MS = 5000;
 const SENT_RETAIN_MS = 60_000;
 // Last resort if the agent-speaking signal ever gets stuck.
 const HARD_MAX_WAIT_MS = 60_000;
+// Longest a settling Voice Agent holds up the head of the queue: urgent text this long
+// after it reached the front, other text this long past the force-send.
+const URGENT_SETTLE_MAX_MS = 3000;
+const SETTLE_OVERRIDE_MS = 4000;
 
 interface Item {
   nonce: string;
@@ -83,6 +91,10 @@ export class PoliteQueue {
   push(text: string, urgent = false): string[] {
     const parts = splitUtterance(text);
     if (parts.length === 0) return [];
+    if (urgent) {
+      const queued = this.promoteQueued(parts);
+      if (queued) return queued;
+    }
     const nonces = parts.map((part) => {
       const nonce = randomBytes(8).toString('hex');
       this.texts.set(nonce, { text: part });
@@ -103,6 +115,25 @@ export class PoliteQueue {
     return nonces;
   }
 
+  // "Speak now" for text that is already waiting (the app re-sends it with urgent=true):
+  // the waiting utterances are promoted instead of queueing the same words twice.
+  private promoteQueued(parts: string[]): string[] | undefined {
+    const matched: Item[] = [];
+    for (const part of parts) {
+      const it = this.items.find((x) => x.text === part && !matched.includes(x));
+      if (!it) return undefined;
+      matched.push(it);
+    }
+    const last = Math.max(...matched.map((it) => this.items.indexOf(it)));
+    // Like any urgent push, whatever waits ahead of it goes too.
+    for (let i = 0; i <= last; i++) {
+      const it = this.items[i];
+      if (it) it.urgent = true;
+    }
+    this.tick(this.now());
+    return matched.map((it) => it.nonce);
+  }
+
   // Called every 100 ms and on speech events. Speaks at most one utterance per call, so
   // the session can report the agent busy before the next one is considered.
   tick(now: number): void {
@@ -121,6 +152,11 @@ export class PoliteQueue {
     // for a moment after every turn, and resetting on that would postpone typed text
     // indefinitely. The agent audibly speaking only defers it until the agent is done.
     if (head.headSince === undefined) head.headSince = now;
+    const settleCap = head.urgent ? URGENT_SETTLE_MAX_MS : this.maxWaitMs + SETTLE_OVERRIDE_MS;
+    if (now - head.headSince < settleCap && this.sig.settling?.()) {
+      this.notifyHead(head, 'agent-speaking');
+      return;
+    }
 
     let go: boolean;
     if (head.urgent) {
@@ -149,6 +185,11 @@ export class PoliteQueue {
     if (head.notified === reason) return;
     head.notified = reason;
     this.notify({ nonce: head.nonce, text: head.text, reason });
+  }
+
+  // Utterances still waiting to be sent.
+  get waiting(): number {
+    return this.items.length;
   }
 
   // Queued text, or text sent moments ago that the Brain has not pulled yet.
