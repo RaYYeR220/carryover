@@ -29,6 +29,10 @@ const SHUTDOWN_CAP_MS = 5000;
 export interface CreateServerOptions {
   cfg?: Config;
   overrides?: Partial<CallDeps>;
+  // See resolveTrustProxy(): 0 disables X-Forwarded-For trust entirely (the default under
+  // tests), > 0 trusts it from a loopback-local reverse proxy (the default otherwise, e.g.
+  // the cloudflared tunnel in front of a real deployment).
+  trustProxyHops?: number;
 }
 
 export interface CreatedServer {
@@ -55,6 +59,26 @@ function defaultCallDeps(cfg: Config): CallDeps {
   };
 }
 
+// This Fastify version deliberately no-ops a bare hop-count number: getTrustProxyFn(n)
+// always returns false for a number, because a hop count alone can't verify who the
+// immediate peer actually is (see fastify/lib/request.js). Our one real hop (cloudflared,
+// or any reverse proxy in front of this process) always connects over loopback, so we trust
+// X-Forwarded-For exactly when the direct connection is loopback -- that is both correct
+// for this deployment and immune to a caller spoofing the header on a direct connection.
+function resolveTrustProxy(hops: number): boolean | 'loopback' {
+  return hops > 0 ? 'loopback' : false;
+}
+
+function defaultTrustProxyHops(): number {
+  const raw = process.env.TRUST_PROXY_HOPS;
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  // vitest sets this; tests default to no proxy trust unless a test opts in explicitly.
+  return process.env.VITEST ? 0 : 1;
+}
+
 function withTimeout(p: Promise<unknown>, ms: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -67,7 +91,17 @@ function withTimeout(p: Promise<unknown>, ms: number): Promise<void> {
 
 export async function createServer(opts: CreateServerOptions = {}): Promise<CreatedServer> {
   const cfg = opts.cfg ?? loadConfig();
-  const app = Fastify({ bodyLimit: BODY_LIMIT_BYTES, logger: false });
+  const trustProxyHops = opts.trustProxyHops ?? defaultTrustProxyHops();
+  const app = Fastify({
+    bodyLimit: BODY_LIMIT_BYTES,
+    logger: false,
+    trustProxy: resolveTrustProxy(trustProxyHops),
+    // A stateless MCP client's standalone GET listen stream stays open indefinitely by
+    // design (server.ts's registerMcp() never sends unsolicited notifications on it, so it
+    // just waits). Without this, app.close() would wait for that connection to end on its
+    // own -- i.e. never -- and graceful shutdown would hang.
+    forceCloseConnections: true,
+  });
   const registry = new CallRegistry();
   const lines = new LineCodes();
   const deps: CallDeps = { ...defaultCallDeps(cfg), ...opts.overrides };

@@ -1,9 +1,12 @@
+import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createServer } from '../../src/server.js';
 import {
   answerLine,
+  cfg,
   closeSocket,
   openLineSocket,
   startTestServer,
@@ -12,11 +15,30 @@ import {
 
 type Server = Awaited<ReturnType<typeof startTestServer>>;
 
-async function connectClient(server: Server): Promise<Client> {
-  const transport = new StreamableHTTPClientTransport(new URL(`${server.httpBase}/mcp`));
+async function connectClientTo(httpBase: string): Promise<Client> {
+  const transport = new StreamableHTTPClientTransport(new URL(`${httpBase}/mcp`));
   const client = new Client({ name: 'test-client', version: '0.0.0' });
   await client.connect(transport);
   return client;
+}
+
+async function connectClient(server: Server): Promise<Client> {
+  return connectClientTo(server.httpBase);
+}
+
+// A server whose relay agent lookup always fails: place_call's start() rejects (502) right
+// away, so it never occupies a concurrency slot -- only the rate limiter is exercised.
+function createFailingServer() {
+  return createServer({
+    cfg: cfg(),
+    overrides: {
+      agents: {
+        ensureRelayAgent: async () => {
+          throw new Error('boom');
+        },
+      },
+    },
+  });
 }
 
 function toolResult(res: CallToolResult): unknown {
@@ -175,5 +197,32 @@ describe('MCP /mcp', () => {
       arguments: validCallRequest({ target: { kind: 'line', code: 'ZZZZZZ' } }),
     });
     expect((res as CallToolResult).isError).toBe(true);
+  });
+
+  it('place_call hits the same per-IP rate limit as POST /api/calls', async () => {
+    const failing = await createFailingServer();
+    try {
+      const address = failing.app.server.address() as AddressInfo;
+      const base = `http://127.0.0.1:${address.port}`;
+      client = await connectClientTo(base);
+      for (let i = 0; i < 10; i++) {
+        const res = (await client.callTool({
+          name: 'place_call',
+          arguments: validCallRequest(),
+        })) as CallToolResult;
+        expect(res.isError).toBe(true);
+        expect((res.content[0] as { text: string }).text).toBe('Could not start the call');
+      }
+      const res = (await client.callTool({
+        name: 'place_call',
+        arguments: validCallRequest(),
+      })) as CallToolResult;
+      expect(res.isError).toBe(true);
+      expect((res.content[0] as { text: string }).text).toBe(
+        'Too many calls from this address. Try again later.',
+      );
+    } finally {
+      await failing.close();
+    }
   });
 });

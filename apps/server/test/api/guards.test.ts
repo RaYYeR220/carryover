@@ -2,19 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { clientIp, IpRateLimiter } from '../../src/api/guards.js';
 
 describe('clientIp', () => {
-  it('prefers the first hop of x-forwarded-for', () => {
-    const req = { headers: { 'x-forwarded-for': '1.2.3.4, 5.6.7.8' }, ip: '127.0.0.1' };
-    expect(clientIp(req)).toBe('1.2.3.4');
-  });
-
-  it('falls back to the socket ip without the header', () => {
-    const req = { headers: {}, ip: '10.0.0.9' };
-    expect(clientIp(req)).toBe('10.0.0.9');
-  });
-
-  it('ignores an array header by taking its first value', () => {
-    const req = { headers: { 'x-forwarded-for': ['9.9.9.9', '1.1.1.1'] }, ip: '127.0.0.1' };
-    expect(clientIp(req)).toBe('9.9.9.9');
+  it("is Fastify's own req.ip, not a hand-parsed header", () => {
+    // req.ip is only ever X-Forwarded-For-derived when Fastify's trustProxy config (set in
+    // server.ts from a trusted connection) says so; clientIp must not re-parse headers
+    // itself, or a caller could bypass that trust decision. Coverage for the actual
+    // trust-boundary behavior (spoofed XFF ignored/accepted depending on trustProxyHops)
+    // lives in routes.test.ts and mcp.test.ts, against a real server.
+    expect(clientIp({ ip: '10.0.0.9' })).toBe('10.0.0.9');
+    // A header on the request object must have no effect -- clientIp only reads .ip.
+    const withHeaders = { ip: '10.0.0.9', headers: { 'x-forwarded-for': '1.2.3.4' } };
+    expect(clientIp(withHeaders)).toBe('10.0.0.9');
   });
 });
 
@@ -42,5 +39,16 @@ describe('IpRateLimiter', () => {
     expect(limiter.check('a')).toBe(false);
     now = 1001;
     expect(limiter.check('a')).toBe(true);
+  });
+
+  it('evicts an ip once its whole window has expired, bounding memory', () => {
+    let now = 0;
+    const limiter = new IpRateLimiter({ limit: 1, windowMs: 1000, now: () => now });
+    for (let i = 0; i < 500; i++) limiter.check(`ip-${i}`);
+    expect(limiter.size).toBe(500);
+    now = 2000; // every prior entry is now outside the window
+    // A single check() call (for an unrelated ip) sweeps all of them, not just its own.
+    limiter.check('someone-new');
+    expect(limiter.size).toBe(1);
   });
 });

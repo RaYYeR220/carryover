@@ -11,6 +11,22 @@ import {
 
 type Server = Awaited<ReturnType<typeof startTestServer>>;
 
+// A server whose relay agent lookup always fails: every call's start() rejects (502) right
+// away, so it never occupies a concurrency slot -- only the rate limiter is exercised.
+function createFailingServer(opts: { trustProxyHops?: number } = {}) {
+  return createServer({
+    cfg: cfg(),
+    trustProxyHops: opts.trustProxyHops,
+    overrides: {
+      agents: {
+        ensureRelayAgent: async () => {
+          throw new Error('boom');
+        },
+      },
+    },
+  });
+}
+
 describe('REST API', () => {
   let server: Server | undefined;
 
@@ -221,17 +237,9 @@ describe('REST API', () => {
   it('enforces a per-IP rate limit of 10 calls/hour', async () => {
     // A separate server whose relay agent lookup always fails: every call's start()
     // rejects (502) right away, so it never occupies a concurrency slot and this test
-    // only exercises the rate limiter.
-    const failing = await createServer({
-      cfg: cfg(),
-      overrides: {
-        agents: {
-          ensureRelayAgent: async () => {
-            throw new Error('boom');
-          },
-        },
-      },
-    });
+    // only exercises the rate limiter. Default trustProxyHops under vitest is 0, so every
+    // inject() call (no X-Forwarded-For sent) resolves to the same untrusted socket ip.
+    const failing = await createFailingServer();
     try {
       for (let i = 0; i < 10; i++) {
         const res = await failing.app.inject({
@@ -251,6 +259,69 @@ describe('REST API', () => {
     } finally {
       await failing.close();
     }
+  });
+
+  it('with a trusted proxy hop, keys the rate limit on the proxy-appended rightmost X-Forwarded-For entry, not the spoofable leftmost one', async () => {
+    const failing = await createFailingServer({ trustProxyHops: 1 });
+    try {
+      for (let i = 0; i < 10; i++) {
+        const res = await failing.app.inject({
+          method: 'POST',
+          url: '/api/calls',
+          // A different "client" claimed on every call, but the same value our (trusted,
+          // loopback) proxy would have appended -- these must all count against one bucket.
+          headers: { 'x-forwarded-for': `1.2.3.${i}, 9.9.9.9` },
+          payload: validCallRequest(),
+        });
+        expect(res.statusCode).toBe(502);
+      }
+      const res = await failing.app.inject({
+        method: 'POST',
+        url: '/api/calls',
+        headers: { 'x-forwarded-for': '1.2.3.99, 9.9.9.9' },
+        payload: validCallRequest(),
+      });
+      expect(res.statusCode).toBe(429);
+    } finally {
+      await failing.close();
+    }
+  });
+
+  it('without a trusted proxy, ignores X-Forwarded-For entirely for the rate limit', async () => {
+    const failing = await createFailingServer({ trustProxyHops: 0 });
+    try {
+      for (let i = 0; i < 10; i++) {
+        const res = await failing.app.inject({
+          method: 'POST',
+          url: '/api/calls',
+          // A fresh, unique claimed IP every call -- with no trusted proxy this must be
+          // ignored, or an attacker could reset their own quota by forging the header.
+          headers: { 'x-forwarded-for': `${i}.${i}.${i}.${i}` },
+          payload: validCallRequest(),
+        });
+        expect(res.statusCode).toBe(502);
+      }
+      const res = await failing.app.inject({
+        method: 'POST',
+        url: '/api/calls',
+        headers: { 'x-forwarded-for': '255.255.255.255' },
+        payload: validCallRequest(),
+      });
+      expect(res.statusCode).toBe(429);
+    } finally {
+      await failing.close();
+    }
+  });
+
+  it('rejects a request body over 64 KB with 413, before it ever reaches validation', async () => {
+    server = await startTestServer();
+    const res = await server.app.inject({
+      method: 'POST',
+      url: '/api/calls',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify(validCallRequest({ goal: 'x'.repeat(70 * 1024) })),
+    });
+    expect(res.statusCode).toBe(413);
   });
 
   it('serves a 404 JSON body for unknown routes when there is no web build', async () => {
