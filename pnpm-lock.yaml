@@ -113,6 +113,25 @@ importers:
         specifier: ^5.0.2
         version: 5.0.2(@types/node@26.6.2)(jsdom@30.1.1)(vite@8.3.1(@types/node@26.6.2)(esbuild@0.28.2)(tsx@4.23.15))
 
+  eval:
+    dependencies:
+      '@carryover/protocol':
+        specifier: workspace:*
+        version: link:../packages/protocol
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.2
+        version: 26.6.2
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+
   packages/protocol:
     dependencies:
       zod:
