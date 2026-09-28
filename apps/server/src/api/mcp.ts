@@ -29,8 +29,10 @@ export function registerMcp(app: FastifyInstance, ctx: ServerContext): void {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     reply.hijack();
     reply.raw.on('close', () => {
-      void transport.close();
-      void server.close();
+      // A rejection here must never become an unhandled rejection: one aborted MCP
+      // request closing badly must not take the whole server down.
+      transport.close().catch(() => undefined);
+      server.close().catch(() => undefined);
     });
     await server.connect(transport);
     await transport.handleRequest(req.raw, reply.raw, req.body);
