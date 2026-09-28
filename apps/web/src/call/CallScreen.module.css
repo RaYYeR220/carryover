@@ -1,0 +1,70 @@
+/* The call screen shell: top bar, then side panel + transcript/dock. */
+.shell {
+  --focus: #fff;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--night);
+  color: var(--on);
+  font: 400 16px / 1.5 var(--sans);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 384px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.main {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+}
+
+.dock {
+  min-width: 0;
+  padding: 14px 48px 18px;
+  border-top: 1px solid var(--night-line);
+  background: #000;
+}
+
+.dockIn {
+  max-width: 820px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.talk {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+@media (max-width: 820px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .dock {
+    padding: 10px 12px 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .dockIn,
+  .talk {
+    gap: 10px;
+  }
+
+  /* While a question is open on a phone, the card takes the dock. */
+  .asking .talk {
+    display: none;
+  }
+}

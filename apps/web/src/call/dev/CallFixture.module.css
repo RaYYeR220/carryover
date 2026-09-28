@@ -1,0 +1,38 @@
+.demo {
+  border-radius: 16px;
+  background: var(--night-1);
+  box-shadow: inset 0 0 0 1px var(--night-line);
+  padding: 14px 14px 12px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.head span {
+  margin-left: auto;
+  color: var(--on-3);
+}
+
+.bar {
+  height: 4px;
+  margin: 10px 0 12px;
+  border-radius: 4px;
+  background: #232323;
+  overflow: hidden;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: #fff;
+}
+
+.demo p {
+  font-size: 13px;
+  color: var(--on-3);
+}

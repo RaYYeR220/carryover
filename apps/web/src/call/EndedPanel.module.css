@@ -1,0 +1,176 @@
+.screen {
+  --focus: #fff;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  padding: 24px;
+  background: var(--night);
+  color: var(--on);
+}
+
+.wm {
+  justify-self: start;
+  display: inline-flex;
+  padding: 4px 0;
+  border-radius: 6px;
+}
+
+.card {
+  align-self: center;
+  justify-self: center;
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.kick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 900 14px / 1 var(--dot);
+  font-variation-settings: "ROND" 100;
+  letter-spacing: 0.08em;
+  color: var(--on-3);
+}
+
+.kick i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+}
+
+.card h1 {
+  font: 300 clamp(40px, 5vw, 56px) / 1.05 var(--display);
+  letter-spacing: -0.03em;
+}
+
+.card p {
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--on-2);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/* ---------- in the dock ---------- */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 12px 12px 18px;
+  border-radius: 16px;
+  background: var(--night-2);
+  box-shadow: inset 0 0 0 1px #3a3a3a;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+}
+
+.text b {
+  display: block;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.text p {
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--on-2);
+}
+
+.barActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---------- connection ---------- */
+.conn {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 6px 8px 6px 16px;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+  font: 700 15px / 1.2 var(--sans);
+  box-shadow: 0 12px 40px -8px rgb(0 0 0 / 0.8);
+  white-space: nowrap;
+  --focus: #000;
+}
+
+.conn:not(:has(button)) {
+  padding-right: 16px;
+}
+
+.conn button {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: #000;
+  color: #fff;
+  font: 700 14px / 1 var(--sans);
+  position: relative;
+}
+
+.conn button::after {
+  content: "";
+  position: absolute;
+  inset: -5px 0;
+}
+
+.spin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #d4d4d4;
+  border-top-color: #000;
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 820px) {
+  .screen {
+    padding: 16px;
+  }
+
+  .bar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .barActions {
+    justify-content: stretch;
+  }
+
+  .barActions > * {
+    flex: 1;
+  }
+
+  .conn {
+    top: 10px;
+  }
+}

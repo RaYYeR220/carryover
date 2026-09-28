@@ -1,0 +1,399 @@
+.page {
+  min-height: 100dvh;
+  background:
+    radial-gradient(circle, var(--paper-dot) 1px, transparent 1.5px) 8px 8px / 16px 16px,
+    var(--paper);
+  color: var(--ink);
+  padding-bottom: var(--s9);
+}
+
+.wrap {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: var(--s6) var(--pad) 0;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  margin-bottom: var(--s6);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 560px) {
+  .top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--s3);
+  }
+}
+
+.nav {
+  display: flex;
+  gap: var(--s2);
+  font: 500 15px / 1 var(--sans);
+}
+
+.nav a {
+  padding: var(--s2) var(--s3);
+  border-radius: var(--pill);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.nav a:hover {
+  background: var(--paper-2);
+}
+
+.nav a[aria-current="page"] {
+  background: var(--ink);
+  color: #fff;
+}
+
+.h1 {
+  font: 300 clamp(32px, 4.4vw, 48px) / 1.05 var(--display);
+  letter-spacing: -0.025em;
+}
+
+.lede {
+  margin-top: var(--s3);
+  max-width: 46em;
+  color: var(--ink-2);
+  font-size: var(--fs-body);
+}
+
+.error {
+  margin-top: var(--s5);
+  padding: var(--s4);
+  border-radius: var(--r3);
+  background: #fff;
+  box-shadow: inset 0 0 0 2px var(--signal);
+  color: var(--signal);
+  font-size: 15px;
+}
+
+/* ---------- start grid ---------- */
+
+.startGrid {
+  margin-top: var(--s7);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s6) var(--s7);
+}
+
+@media (max-width: 860px) {
+  .startGrid {
+    grid-template-columns: 1fr;
+    gap: var(--s6);
+  }
+}
+
+.lbl {
+  display: block;
+  font: 700 14px / 1.2 var(--sans);
+  color: var(--ink-3);
+  margin: 0 0 var(--s3);
+}
+
+.help {
+  margin-top: var(--s2);
+  font-size: 14px;
+  color: var(--ink-3);
+}
+
+/* destinations */
+
+.dest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.dest label {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4);
+  border-radius: var(--r3);
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--hair);
+  cursor: pointer;
+  transition: box-shadow var(--t-fast);
+}
+
+.dest label:hover {
+  box-shadow: inset 0 0 0 1px #a8a8a8;
+}
+
+.dest input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dest .rd {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px #9a9a9a;
+  display: grid;
+  place-items: center;
+}
+
+.destOn {
+  box-shadow: inset 0 0 0 2px var(--ink) !important;
+}
+
+.destOn .rd {
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.destOn .rd::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.dest input:focus-visible + .rd {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.dest b {
+  display: block;
+  font-size: 16px;
+}
+
+.dest small {
+  display: block;
+  font-size: 14px;
+  color: var(--ink-3);
+}
+
+.tag {
+  font: 700 12px / 1 var(--sans);
+  padding: 6px 9px;
+  border-radius: var(--pill);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.tagRed {
+  background: var(--signal);
+  color: #fff;
+}
+
+/* practice box */
+
+.practiceBox {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s4);
+  align-items: center;
+  margin-top: var(--s3);
+  padding: var(--s4);
+  border-radius: var(--r3);
+  background: #000;
+  color: #fff;
+}
+
+@media (max-width: 480px) {
+  .practiceBox {
+    grid-template-columns: 1fr;
+  }
+}
+
+.qr {
+  width: 112px;
+  height: 112px;
+  border-radius: var(--r2);
+  flex: none;
+}
+
+.practiceBox b {
+  display: block;
+  font-size: 16px;
+}
+
+.practiceCode {
+  margin-top: 4px;
+  font-size: 14px;
+  color: var(--on-2);
+}
+
+.practiceCode code {
+  font: 700 15px / 1 var(--dot);
+  font-variation-settings: "ROND" 100;
+  letter-spacing: 0.04em;
+  color: #fff;
+}
+
+.practiceHint {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--on-3);
+}
+
+.practiceLoading,
+.practiceError {
+  font-size: 15px;
+  color: var(--on-2);
+}
+
+.practiceError {
+  color: #ff7a7f;
+}
+
+.ws {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font: 900 13px / 1 var(--dot);
+  font-variation-settings: "ROND" 100;
+  letter-spacing: 0.08em;
+}
+
+.retryLink {
+  display: inline-block;
+  margin-top: 10px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: 700 13px / 1 var(--sans);
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* goal field */
+
+.field {
+  display: block;
+  margin-top: var(--s6);
+}
+
+.field textarea,
+.field input,
+.field select {
+  width: 100%;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r3);
+  border: 0;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--hair);
+  font: 400 17px / 1.4 var(--sans);
+  color: var(--ink);
+}
+
+.field select,
+.field input {
+  height: 52px;
+  padding: 0 var(--s4);
+}
+
+.field textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.field textarea:focus,
+.field input:focus,
+.field select:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+/* fact chips */
+
+.fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.fieldset > .lbl {
+  padding: 0;
+}
+
+.fchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: 48px;
+  padding: var(--s2) var(--s3) var(--s2) var(--s2);
+  border-radius: var(--r3);
+  border: 0;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--hair);
+  text-align: left;
+}
+
+.fchip .ck {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 2px #9a9a9a;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.fchip[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.fchip[aria-pressed="true"] .ck {
+  background: var(--ink);
+  box-shadow: none;
+}
+
+.fchip .ck svg {
+  opacity: 0;
+}
+
+.fchip[aria-pressed="true"] .ck svg {
+  opacity: 1;
+}
+
+.fchip b {
+  display: block;
+  font-size: 15px;
+}
+
+.fchip small {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.modeHelp {
+  margin-top: var(--s3);
+  font-size: 14px;
+  color: var(--ink-2);
+  min-height: 20px;
+}
+
+/* footer */
+
+.footer {
+  margin-top: var(--s8);
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}

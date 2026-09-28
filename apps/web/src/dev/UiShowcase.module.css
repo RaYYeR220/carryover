@@ -1,0 +1,286 @@
+.page {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  min-height: 56px;
+  padding: 0 24px;
+}
+
+.head h1 {
+  font: 300 32px / 1 var(--display);
+  letter-spacing: -0.02em;
+}
+
+.stage {
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--r6);
+  background: var(--night);
+  color: var(--on);
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.paperBlock {
+  border-radius: var(--r5);
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--hair);
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.label {
+  font: 700 14px / 1.2 var(--sans);
+  color: var(--on-3);
+  margin-bottom: 10px;
+}
+
+.paperBlock .label {
+  color: var(--ink-3);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 72px;
+  padding: 0 20px 0 24px;
+  border: 1px solid var(--night-line);
+  border-radius: 16px;
+}
+
+.vsep {
+  width: 1px;
+  height: 30px;
+  background: var(--night-line);
+  flex: none;
+}
+
+.callee {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.callee b {
+  font: 700 17px / 1.2 var(--sans);
+}
+
+.callee span {
+  font-size: 13px;
+  color: var(--on-2);
+}
+
+.timer {
+  font: 700 17px / 1 var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctrls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(344px, 100%), 344px));
+  gap: 20px;
+}
+
+.device {
+  border-radius: 24px;
+  background: #000;
+  border: 1px solid #2b2b2b;
+  padding: 12px 12px 18px;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+.screenLg {
+  height: 214px;
+}
+
+.screenStrip {
+  height: 54px;
+}
+
+.caption {
+  padding: 12px 6px 0;
+}
+
+.caption b {
+  display: block;
+  font: 700 20px / 1.25 var(--sans);
+}
+
+.caption span {
+  display: block;
+  margin-top: 6px;
+  font-size: 15px;
+  color: var(--on-2);
+}
+
+.strips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(366px, 100%), 366px));
+  gap: 12px;
+}
+
+.strip {
+  border-radius: 18px;
+  background: #000;
+  border: 1px solid #2b2b2b;
+  padding: 8px 8px 10px;
+}
+
+.stripCap {
+  padding: 8px 4px 0;
+  font: 700 15px / 1.2 var(--sans);
+}
+
+.hero {
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--r6);
+  background: var(--night);
+  color: var(--on);
+  min-height: 640px;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 48px;
+}
+
+.heroCopy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 72px 24px 48px;
+  gap: 24px;
+}
+
+.heroCopy p {
+  color: var(--on-2);
+  max-width: 34em;
+  font-size: 19px;
+  line-height: 1.6;
+}
+
+.heroDev {
+  position: relative;
+  width: min(940px, calc(100% - 64px));
+  margin: auto auto 0;
+  padding: 16px 22px 22px;
+  border-radius: var(--r5);
+  background: #000;
+  border: 1px solid #2b2b2b;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 30px 80px -30px rgb(0 0 0 / 0.9);
+}
+
+.heroBody {
+  display: grid;
+  grid-template-columns: 318px minmax(0, 1fr);
+  gap: 28px;
+  margin-top: 14px;
+}
+
+.heroScreen {
+  height: 232px;
+}
+
+.dbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+}
+
+.qrCard {
+  background: var(--paper);
+  border-radius: var(--r5);
+  padding: 22px;
+  width: fit-content;
+  box-shadow:
+    0 0 0 8px rgb(255 255 255 / 0.04),
+    0 30px 80px -20px rgb(0 0 0 / 0.9);
+}
+
+.qr {
+  width: min(280px, 62vw);
+  height: auto;
+}
+
+.qrSmall {
+  width: 112px;
+  height: 112px;
+  border-radius: 10px;
+}
+
+.toastHost {
+  position: relative;
+  height: 120px;
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px var(--night-line);
+}
+
+.fader {
+  max-width: 640px;
+}
+
+@media (max-width: 860px) {
+  .heroBody {
+    grid-template-columns: 1fr;
+  }
+
+  .heroDev {
+    width: auto;
+    margin: 0 12px;
+  }
+
+  .heroScreen {
+    height: 150px;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 12px;
+  }
+
+  .stage,
+  .paperBlock {
+    padding: 16px;
+    border-radius: var(--r5);
+  }
+
+  .ctrls {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .heroCopy {
+    padding: 48px 16px 32px;
+  }
+}
