@@ -5,8 +5,10 @@ import {
   createHistory,
   createVault,
   type HistoryEntry,
+  type KV,
   loadCallToken,
   memoryKv,
+  resilientKv,
   saveCallToken,
 } from '../../src/lib/store';
 
@@ -111,6 +113,84 @@ describe('history', () => {
     const all = await history.list();
     expect(all).toHaveLength(200);
     expect(all.at(-1)?.callId).toBe('c5');
+  });
+
+  it('removes an entry by call id', async () => {
+    await history.save(entry('a', 1000));
+    await history.save(entry('b', 2000));
+    await history.remove('a');
+    await history.remove('missing');
+    expect((await history.list()).map((e) => e.callId)).toEqual(['b']);
+  });
+});
+
+describe('resilientKv', () => {
+  it('retries a failing primary on the fallback and keeps using it', async () => {
+    let primaryCalls = 0;
+    const primary: KV = {
+      get: async () => {
+        primaryCalls++;
+        throw new Error('idb broken');
+      },
+      update: async () => {
+        primaryCalls++;
+        throw new Error('idb broken');
+      },
+    };
+    const fallback = memoryKv();
+    const kv = resilientKv([() => primary, () => fallback]);
+
+    await kv.update('k', () => 'v1');
+    expect(await kv.get('k')).toBe('v1');
+    // Only the first operation should have touched the broken primary; once
+    // swapped, later calls go straight to the fallback.
+    await kv.update('k', () => 'v2');
+    expect(await kv.get('k')).toBe('v2');
+    expect(primaryCalls).toBe(1);
+  });
+
+  it('falls all the way to memory when every real backend fails', async () => {
+    const broken = (): KV => ({
+      get: async () => {
+        throw new Error('down');
+      },
+      update: async () => {
+        throw new Error('down');
+      },
+    });
+    const kv = resilientKv([broken, broken, memoryKv]);
+    await kv.update('k', () => 'ok');
+    expect(await kv.get('k')).toBe('ok');
+  });
+
+  it('a factory that throws while constructing is also skipped', async () => {
+    const kv = resilientKv([
+      () => {
+        throw new Error('indexedDB unavailable');
+      },
+      memoryKv,
+    ]);
+    await kv.update('k', () => 'v');
+    expect(await kv.get('k')).toBe('v');
+  });
+
+  it('vault and history keep working when their kv fails at runtime', async () => {
+    const primary: KV = {
+      get: async () => {
+        throw new Error('transaction aborted');
+      },
+      update: async () => {
+        throw new Error('transaction aborted');
+      },
+    };
+    const kv = resilientKv([() => primary, memoryKv]);
+    const vault = createVault(kv);
+    await vault.save({ key: 'name', label: 'Name', value: 'Maya Chen' });
+    expect(await vault.list()).toEqual([{ key: 'name', label: 'Name', value: 'Maya Chen' }]);
+
+    const hist = createHistory(kv);
+    await hist.save(entry('z', 1));
+    expect(await hist.get('z')).toMatchObject({ callId: 'z' });
   });
 });
 

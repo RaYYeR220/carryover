@@ -71,6 +71,8 @@ export interface CallScreenProps {
 }
 
 const CAP_KEY = 'carryover.captionSize';
+/** The protocol caps `answer.text` at 500 chars, well under `say.text`'s 2000. */
+const ANSWER_MAX_CHARS = 500;
 /** A pickup older than this when it first reaches the screen is a replay: no flash. */
 const PICKUP_FRESH_MS = 15_000;
 /** Reduced motion: the steady red frame stays this long. */
@@ -368,6 +370,7 @@ export function CallScreen({
                           ? `Type your answer for ${ask.from}…`
                           : 'Type what you want said…'
                       }
+                      maxLength={typingAnswer ? ANSWER_MAX_CHARS : undefined}
                       hint
                     />
                   </div>

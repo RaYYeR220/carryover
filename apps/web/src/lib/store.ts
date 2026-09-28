@@ -48,24 +48,67 @@ function idbKv(): KV {
   };
 }
 
-let defaultKv: KV | null = null;
-/** IndexedDB when available, else localStorage, else memory. Opened on first use. */
-function lazyDefaultKv(): KV {
-  const pick = (): KV => {
-    if (defaultKv) return defaultKv;
-    try {
-      if (typeof indexedDB !== 'undefined') defaultKv = idbKv();
-      else if (typeof localStorage !== 'undefined') defaultKv = localStorageKv('carryover.');
-    } catch {
-      defaultKv = null;
+/**
+ * A KV backed by a chain of backends, tried in order. Each backend is built
+ * lazily (on first operation) and only when needed. If a backend throws —
+ * either while being built, or while actually doing the get/update (Safari
+ * private mode: IndexedDB exists but every request or transaction rejects at
+ * runtime) — the wrapper drops it for good and retries the same operation on
+ * the next backend in the chain. The last factory should not throw (memory
+ * never does), so every operation eventually succeeds.
+ */
+export function resilientKv(factories: readonly (() => KV)[]): KV {
+  let index = 0;
+  let current: KV | null = null;
+
+  const activate = (): KV => {
+    while (!current && index < factories.length) {
+      try {
+        current = factories[index]?.() ?? null;
+      } catch {
+        current = null;
+        index++;
+      }
     }
-    defaultKv ??= memoryKv();
-    return defaultKv;
+    return current ?? memoryKv();
   };
+
+  async function run<T>(op: (kv: KV) => Promise<T>): Promise<T> {
+    for (;;) {
+      const kv = activate();
+      try {
+        return await op(kv);
+      } catch (err) {
+        if (index >= factories.length - 1) throw err;
+        current = null;
+        index++;
+      }
+    }
+  }
+
   return {
-    get: (key) => pick().get(key),
-    update: (key, fn) => pick().update(key, fn),
+    get: (key) => run((kv) => kv.get(key)),
+    update: (key, fn) => run((kv) => kv.update(key, fn)),
   };
+}
+
+/**
+ * IndexedDB when available, else localStorage, else memory. Each backend is
+ * opened on first use; a runtime failure (not just absence) permanently
+ * swaps to the next one and retries.
+ */
+function lazyDefaultKv(): KV {
+  return resilientKv([
+    () => {
+      if (typeof indexedDB === 'undefined') throw new Error('indexedDB unavailable');
+      return idbKv();
+    },
+    () => {
+      if (typeof localStorage === 'undefined') throw new Error('localStorage unavailable');
+      return localStorageKv('carryover.');
+    },
+    memoryKv,
+  ]);
 }
 
 /* ---------- vault ---------- */
@@ -129,6 +172,7 @@ export interface History {
   get(callId: string): Promise<HistoryEntry | undefined>;
   /** Insert, or replace the entry for the same call. Keeps the newest 200. */
   save(entry: HistoryEntry): Promise<void>;
+  remove(callId: string): Promise<void>;
 }
 
 export function createHistory(kv: KV): History {
@@ -145,6 +189,11 @@ export function createHistory(kv: KV): History {
         [...old.filter((e) => e.callId !== entry.callId), entry]
           .sort((a, b) => b.startedAt - a.startedAt)
           .slice(0, HISTORY_MAX),
+      );
+    },
+    async remove(callId) {
+      await kv.update<HistoryEntry[]>(HISTORY_KEY, (old = []) =>
+        old.filter((e) => e.callId !== callId),
       );
     },
   };

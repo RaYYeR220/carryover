@@ -22,11 +22,14 @@ export interface ComposerProps {
   inputRef?: Ref<HTMLTextAreaElement>;
   /** Show the keyboard hint row under the box (desktop). */
   hint?: boolean;
+  /** Protocol cap for what's being composed. Default `MAX_SAY_CHARS` (say.text); pass 500 while answering a question (answer.text). */
+  maxLength?: number;
 }
 
 /**
  * What the user types to be said for them. Enter speaks it, Shift+Enter adds a
- * line; whitespace-only text never sends. Long pastes go through whole.
+ * line; whitespace-only text never sends. Long pastes go through whole (up to
+ * `maxLength`, which the browser enforces on typing and on paste).
  */
 export function Composer({
   onSend,
@@ -34,6 +37,7 @@ export function Composer({
   disabled,
   inputRef,
   hint,
+  maxLength = MAX_SAY_CHARS,
 }: ComposerProps) {
   const id = useId();
   const [value, setValue] = useState('');
@@ -89,7 +93,7 @@ export function Composer({
           value={value}
           placeholder={placeholder}
           enterKeyHint="send"
-          maxLength={MAX_SAY_CHARS}
+          maxLength={maxLength}
           disabled={disabled}
           onChange={(e) => {
             setValue(e.target.value);

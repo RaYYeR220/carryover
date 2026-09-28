@@ -62,6 +62,23 @@ describe('Composer', () => {
     expect(box()).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Speak this' })).toBeDisabled();
   });
+
+  it('defaults to the say.text cap of 2000 characters', () => {
+    render(<Composer onSend={() => {}} />);
+    expect(box()).toHaveAttribute('maxLength', '2000');
+  });
+
+  it('clips to a lower maxLength, e.g. answer.text’s 500-char cap', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer onSend={onSend} maxLength={500} />);
+    expect(box()).toHaveAttribute('maxLength', '500');
+    await user.click(box());
+    await user.paste('x'.repeat(600));
+    expect((box() as HTMLTextAreaElement).value).toHaveLength(500);
+    await user.keyboard('{Enter}');
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('x'.repeat(500));
+  });
 });
 
 describe('QuickReplies', () => {

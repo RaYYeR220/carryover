@@ -93,6 +93,19 @@ describe('CallScreen: ask card', () => {
     expect(commands()).toEqual([{ t: 'answer', askId: 'a1', text: 'March 14th' }]);
   });
 
+  it('caps the composer at 500 chars while answering (the protocol’s answer.text limit)', async () => {
+    const user = userEvent.setup();
+    setup({ view: live([askEvent('dob')]) });
+    // Before "Type an answer" is pressed, the composer is for `say` (2000 chars).
+    expect(
+      screen.getByRole('textbox', { name: 'What Carryover should say for you' }),
+    ).toHaveAttribute('maxLength', '2000');
+    await user.click(screen.getByRole('button', { name: 'Type an answer' }));
+    expect(
+      screen.getByRole('textbox', { name: 'What Carryover should say for you' }),
+    ).toHaveAttribute('maxLength', '500');
+  });
+
   it('answers with keys 1, 2 and 3', async () => {
     const user = userEvent.setup();
     const { commands } = setup({ view: live([askEvent('dob')]) });
