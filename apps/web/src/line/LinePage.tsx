@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router';
 import { lineSocketUrl } from '../lib/api';
 import { fmtClock } from '../lib/format';
@@ -12,7 +12,12 @@ import {
   useSurface,
   useToast,
 } from '../ui';
-import { createLineAudioContext, type LineAudio, startLineAudio } from './audio/lineAudio';
+import {
+  AudioEngineLoadError,
+  createLineAudioContext,
+  type LineAudio,
+  startLineAudio,
+} from './audio/lineAudio';
 import s from './LinePage.module.css';
 import { connectLineSocket, type LineSocket, type LineStatusMsg } from './lineSocket';
 
@@ -20,6 +25,9 @@ type Phase = 'connecting' | 'waiting' | 'ringing' | 'connected' | 'ended';
 
 /** The level meter's five bars, left to right. */
 const METER_BARS = [0, 1, 2, 3, 4];
+
+/** How long the page can sit hidden (tab backgrounded, phone locked) while connected before we hang up. */
+const HIDDEN_HANGUP_MS = 20_000;
 
 const PILL: Record<Phase, { state: PillProps['state']; label: string }> = {
   connecting: { state: 'idle', label: 'CONNECTING' },
@@ -30,6 +38,9 @@ const PILL: Record<Phase, { state: PillProps['state']; label: string }> = {
 };
 
 function describeAnswerError(err: unknown): string {
+  if (err instanceof AudioEngineLoadError) {
+    return 'Audio engine failed to load. Reload the page and try again.';
+  }
   if (err instanceof DOMException) {
     if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(err.name)) {
       return 'Microphone access is blocked. Allow it in your browser’s site settings, then tap Try again.';
@@ -39,6 +50,31 @@ function describeAnswerError(err: unknown): string {
     }
   }
   return 'Couldn’t connect the microphone. Check your connection and try again.';
+}
+
+interface CloseInfo {
+  message: string;
+  reconnect: boolean;
+}
+
+/**
+ * Maps a WS close code to what the page should show. `phaseAtClose` is the
+ * last status the socket told us before it closed.
+ */
+function describeClose(code: number, phaseAtClose: Phase): CloseInfo | null {
+  // A normal closure right after the call properly ended is expected --
+  // the practice line simply isn't holding this connection open anymore.
+  if (code === 1000 && phaseAtClose === 'ended') return null;
+  if (code === 4000) {
+    return { message: 'This line was opened on another device.', reconnect: false };
+  }
+  if (code === 4410) {
+    return {
+      message: 'This practice line expired. Start a new one from the app.',
+      reconnect: false,
+    };
+  }
+  return { message: 'Connection lost.', reconnect: true };
 }
 
 function MicIcon({ off }: { off?: boolean }) {
@@ -91,23 +127,36 @@ export default function LinePage() {
   const [callerLabel, setCallerLabel] = useState<string | undefined>();
   const [answering, setAnswering] = useState(false);
   const [answerError, setAnswerError] = useState<string | null>(null);
-  const [socketLost, setSocketLost] = useState(false);
+  const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
   const [muted, setMuted] = useState(false);
   const [level, setLevel] = useState(0);
   const [connectedAt, setConnectedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [reconnectNonce, setReconnectNonce] = useState(0);
   const [toast, showToast, hideToast] = useToast();
 
   const socketRef = useRef<LineSocket | null>(null);
   const audioRef = useRef<LineAudio | null>(null);
   const phaseRef = useRef<Phase>('connecting');
 
+  /** Tears down the local call: stops the mic/speaker and tells the server. Safe to call anytime. */
+  const hangUpNow = useCallback(() => {
+    audioRef.current?.stop();
+    audioRef.current = null;
+    setMuted(false);
+    setLevel(0);
+    socketRef.current?.hangup();
+  }, []);
+
+  // reconnectNonce isn't read in the body; bumping it is exactly how the
+  // Reconnect button asks this effect to open a fresh socket.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reconnectNonce is a deliberate re-run trigger
   useEffect(() => {
     phaseRef.current = 'connecting';
     setPhase('connecting');
     setCallerLabel(undefined);
     setAnswerError(null);
-    setSocketLost(false);
+    setCloseInfo(null);
     setConnectedAt(null);
 
     // Guards against a superseded socket's late callbacks (its own cleanup
@@ -138,11 +187,11 @@ export default function LinePage() {
       onAudio: (mu) => {
         if (isCurrent()) audioRef.current?.playFrame(mu);
       },
-      onClose: () => {
+      onClose: (ev) => {
         if (!isCurrent()) return;
-        setSocketLost(true);
         audioRef.current?.stop();
         audioRef.current = null;
+        setCloseInfo(describeClose(ev.code, phaseRef.current));
       },
     });
     socketRef.current = mySocket;
@@ -153,13 +202,51 @@ export default function LinePage() {
       audioRef.current = null;
       mySocket?.close();
     };
-  }, [code, showToast]);
+  }, [code, showToast, reconnectNonce]);
 
   useEffect(() => {
     if (phase !== 'connected') return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [phase]);
+
+  // A judge locking their phone or switching apps mid-call must not leave
+  // the mic hot and the server-side leg dangling. `pagehide` (tab really
+  // going away) hangs up immediately; a plain visibility change (phone
+  // locked, brief app switch) gives it 20 s before doing the same, in case
+  // they come right back.
+  useEffect(() => {
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const onPageHide = () => hangUpNow();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        if (phaseRef.current === 'connected' && hideTimer === null) {
+          hideTimer = setTimeout(() => {
+            hideTimer = null;
+            hangUpNow();
+          }, HIDDEN_HANGUP_MS);
+        }
+      } else if (hideTimer !== null) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    };
+
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      if (hideTimer !== null) clearTimeout(hideTimer);
+    };
+  }, [hangUpNow]);
+
+  function handleReconnect() {
+    setCloseInfo(null);
+    setReconnectNonce((n) => n + 1);
+  }
 
   async function handleAnswer() {
     if (answering) return;
@@ -194,14 +281,6 @@ export default function LinePage() {
     }
   }
 
-  function handleHangup() {
-    audioRef.current?.stop();
-    audioRef.current = null;
-    setMuted(false);
-    setLevel(0);
-    socketRef.current?.hangup();
-  }
-
   function handleMute() {
     setMuted((m) => {
       const next = !m;
@@ -224,16 +303,17 @@ export default function LinePage() {
       <div className={s.body}>
         <Toast message={toast} onDismiss={hideToast} className={s.hint} />
 
-        {socketLost ? (
+        {closeInfo ? (
           <div className={s.card}>
             <Pill state="ended">DISCONNECTED</Pill>
-            <h1>Connection lost.</h1>
-            <p>This practice line dropped its connection. Reload the page to reconnect.</p>
-            <div className={s.actions}>
-              <Button variant="ink" size="lg" onClick={() => window.location.reload()}>
-                Reload
-              </Button>
-            </div>
+            <h1>{closeInfo.message}</h1>
+            {closeInfo.reconnect && (
+              <div className={s.actions}>
+                <Button variant="ink" size="lg" onClick={handleReconnect}>
+                  Reconnect
+                </Button>
+              </div>
+            )}
           </div>
         ) : answerError ? (
           <div className={s.card}>
@@ -313,7 +393,7 @@ export default function LinePage() {
                   >
                     <MicIcon off={muted} />
                   </IconButton>
-                  <Button variant="red" icon={<HangUpIcon />} onClick={handleHangup}>
+                  <Button variant="red" icon={<HangUpIcon />} onClick={hangUpNow}>
                     Hang up
                   </Button>
                 </div>

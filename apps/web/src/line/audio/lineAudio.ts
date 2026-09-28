@@ -25,6 +25,18 @@ const LEVEL_FFT_SIZE = 512;
 const LEVEL_HZ = 12;
 
 /**
+ * The worklets failed to load (bad URL, MIME mismatch, `addModule` rejected).
+ * Distinct from a mic-permission failure so the UI can say so specifically,
+ * instead of blaming the microphone.
+ */
+export class AudioEngineLoadError extends Error {
+  constructor(cause: unknown) {
+    super('Failed to load the audio engine worklets', { cause });
+    this.name = 'AudioEngineLoadError';
+  }
+}
+
+/**
  * Must be called synchronously at the top of a user-gesture handler (the
  * Answer tap) -- Mobile Safari only allows creating/resuming an AudioContext
  * inside the gesture itself, not after an `await`.
@@ -40,10 +52,14 @@ export async function startLineAudio(
 ): Promise<LineAudio> {
   if (ctx.state === 'suspended') await ctx.resume();
 
-  await Promise.all([
-    ctx.audioWorklet.addModule(micWorkletUrl),
-    ctx.audioWorklet.addModule(playerWorkletUrl),
-  ]);
+  try {
+    await Promise.all([
+      ctx.audioWorklet.addModule(micWorkletUrl),
+      ctx.audioWorklet.addModule(playerWorkletUrl),
+    ]);
+  } catch (err) {
+    throw new AudioEngineLoadError(err);
+  }
 
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -53,13 +69,24 @@ export async function startLineAudio(
 
   const micNode = new AudioWorkletNode(ctx, 'carryover-mic', {
     numberOfInputs: 1,
-    numberOfOutputs: 0,
+    // WebKit can stop calling process() on a worklet node that has no
+    // outputs at all, treating it as disconnected from the render graph.
+    // Give it a real (silent) output instead of numberOfOutputs: 0.
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
     channelCount: 1,
   });
   micNode.port.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
     handlers.onAudioFrame(new Uint8Array(ev.data));
   };
   source.connect(micNode);
+  // The mic worklet never writes to its output (silence by default); route
+  // it through a zero-gain node so it still reaches the destination and
+  // stays part of the active render graph, without anyone hearing it twice.
+  const micSink = ctx.createGain();
+  micSink.gain.value = 0;
+  micNode.connect(micSink);
+  micSink.connect(ctx.destination);
 
   const playerNode = new AudioWorkletNode(ctx, 'carryover-player', {
     numberOfInputs: 0,
@@ -89,7 +116,7 @@ export async function startLineAudio(
     stopped = true;
     clearInterval(levelTimer);
     for (const track of stream.getTracks()) track.stop();
-    for (const node of [source, micNode, playerNode, analyser]) {
+    for (const node of [source, micNode, micSink, playerNode, analyser]) {
       try {
         node.disconnect();
       } catch {
