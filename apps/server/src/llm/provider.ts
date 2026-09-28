@@ -42,7 +42,46 @@ const PROVIDER_BASE_URL: Record<Config['llmProvider'], string> = {
   'aai-gateway': 'https://llm-gateway.assemblyai.com/v1',
 };
 
-function toOpenAiTools(tools: ToolDef[] | undefined): ChatCompletionTool[] | undefined {
+type Params = Record<string, unknown>;
+
+function isPlainObject(v: unknown): v is Params {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// Venice prepends its own system prompt to every request unless told not to: extra
+// tokens and a second voice in a prompt that has to follow strict rules.
+const VENICE_BASE_PARAMS: Params = { venice_parameters: { include_venice_system_prompt: false } };
+
+// Per-model request params (merged over the base). A reasoning model thinks before its
+// first token, which on a live call is dead air: scripts/bench-brain.ts measured these
+// with reasoning off at ~0.6-0.7 s to the first token, against 1.3-2.2 s with it on.
+const REASONING_OFF: Params = { reasoning: { enabled: false } };
+const VENICE_MODEL_PARAMS: Record<string, Params> = {
+  'openai-gpt-54-mini': REASONING_OFF,
+  'deepseek-v4-1-flash': REASONING_OFF,
+  'mercury-2-5': REASONING_OFF,
+  'gemini-3-5-flash-lite': { venice_parameters: { disable_thinking: true } },
+};
+
+// The request params every LLM call on this provider/model carries, besides model,
+// messages, stream and tools. cfg.llmParams (LLM_PARAMS) wins, merged one level deep so
+// {"venice_parameters":{...}} adds to the defaults instead of replacing them.
+export function llmParams(cfg: Pick<Config, 'llmProvider' | 'llmModel' | 'llmParams'>): Params {
+  const layers: Params[] =
+    cfg.llmProvider === 'venice'
+      ? [VENICE_BASE_PARAMS, VENICE_MODEL_PARAMS[cfg.llmModel] ?? {}, cfg.llmParams ?? {}]
+      : [cfg.llmParams ?? {}];
+  const out: Params = {};
+  for (const layer of layers) {
+    for (const [k, v] of Object.entries(layer)) {
+      const prev = out[k];
+      out[k] = isPlainObject(prev) && isPlainObject(v) ? { ...prev, ...v } : v;
+    }
+  }
+  return out;
+}
+
+export function toOpenAiTools(tools: ToolDef[] | undefined): ChatCompletionTool[] | undefined {
   if (!tools || tools.length === 0) return undefined;
   return tools.map((t) => ({
     type: 'function' as const,
@@ -85,12 +124,14 @@ function makeClient(cfg: Config, baseURL: string): OpenAI {
 export function createProvider(cfg: Config, baseUrlOverride?: string): LlmProvider {
   const baseURL = baseUrlOverride ?? PROVIDER_BASE_URL[cfg.llmProvider];
   const openai = makeClient(cfg, baseURL);
+  const extra = llmParams(cfg);
 
   return {
     async *streamChat(messages, tools, signal) {
       const toolParams = toOpenAiTools(tools);
       const stream = await openai.chat.completions.create(
         {
+          ...extra,
           model: cfg.llmModel,
           stream: true,
           messages: messages as unknown as ChatCompletionMessageParam[],
@@ -106,6 +147,7 @@ export function createProvider(cfg: Config, baseUrlOverride?: string): LlmProvid
 
     async complete(messages, opts) {
       const res = await openai.chat.completions.create({
+        ...extra,
         model: cfg.llmModel,
         stream: false,
         messages: messages as unknown as ChatCompletionMessageParam[],

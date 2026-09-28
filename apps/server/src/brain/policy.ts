@@ -61,9 +61,14 @@ export const RELAY_TOOLS: ToolDef[] = [
     type: 'function',
     name: 'share_fact',
     description:
-      'Fetch one of the user’s facts by its key before saying it. If the user has not shared that fact for this call, they are asked instead.',
+      'Only for a detail that is NOT in the FACT SHEET: asks the user to share it. A detail that is in the FACT SHEET is said directly in your reply, never through this tool.',
     parameters: obj(
-      { field: { type: 'string', description: 'Fact key from the FACT SHEET, e.g. "dob".' } },
+      {
+        field: {
+          type: 'string',
+          description: 'Key of the missing detail, e.g. "member_id".',
+        },
+      },
       ['field'],
     ),
   },
@@ -84,7 +89,7 @@ export const RELAY_TOOLS: ToolDef[] = [
     type: 'function',
     name: 'set_line_state',
     description:
-      'Report what is on the line right now: an automated menu (ivr), hold music or announcements (hold), a person (human), or a voicemail greeting (voicemail).',
+      'Correct the LINE STATE when it is wrong: an automated menu (ivr), hold music or announcements (hold), a person (human), or a voicemail greeting (voicemail).',
     parameters: obj({ state: { type: 'string', enum: ['ivr', 'hold', 'human', 'voicemail'] } }, [
       'state',
     ]),
@@ -121,7 +126,7 @@ function autonomyRule(v: BrainCallView): string {
     case 'auto':
       return `You may act for ${u} to reach the GOAL, but only within its constraints. Never agree to anything outside the GOAL (another day or time, a price, a product, any new commitment): call ask_user instead.`;
     case 'assist':
-      return `You may handle greetings, small talk and simple confirmations, but never agree to, choose or decide anything for ${u}: call ask_user for every decision.`;
+      return `You may handle greetings, small talk and simple confirmations, and say what the GOAL already states (such as which prescription or account the call is about), but never agree to, choose or decide anything beyond it for ${u}: call ask_user for every other decision.`;
     case 'relay':
       return `Do not speak for ${u} at all; ${u} types everything that is said. Respond with no text.`;
   }
@@ -146,14 +151,14 @@ Strict rules:
 2. Never state any personal fact about ${u} (date of birth, address, phone number, email, account, member or reference numbers, or any other number or date about them) unless it is written in the FACT SHEET below. Never guess and never fill in a plausible value.
 3. Never confirm a personal fact read to you unless it matches the FACT SHEET; otherwise call ask_user. If the other party asks something like "Is her date of birth June 1st, 1986?" and that exact value is not in the FACT SHEET, do not say yes, no, or "that's right": call ask_user instead of saying yes or no.
 4. If the other party asks for anything that is not in the FACT SHEET, or asks something only ${u} can answer, call ask_user with the question and at most say "One moment, please." Do not answer for ${u}.
-5. Read numbers and identifiers from the FACT SHEET digit by digit. You may repeat back details the other party gave you about their side (a reference number, an appointment time) to check you heard them right.
+5. When the other party asks for a detail that is in the FACT SHEET, say it right away in your reply, with no tool call. Read numbers and identifiers from the FACT SHEET digit by digit. You may repeat back details the other party gave you about their side (a reference number, an appointment time) to check you heard them right.
 6. Automated phone menu (LINE STATE ivr): when a keypad option fits the GOAL, press it with press_keys; if the menu asks you to say an option, say only that option. Otherwise stay silent and respond with no text at all.
-7. On hold (LINE STATE hold), during hold music or recorded announcements: stay silent and respond with no text.
+7. On hold (LINE STATE hold), during hold music or recorded announcements: respond with no text at all. Do not say that you are waiting or holding; nobody is listening.
 8. ${autonomyRule(v)}
 9. If anyone asks whether this is a robot, a recording or an automated system, answer honestly: yes, this is an automated relay speaking for ${u}, who is reading along and typing.
 10. Never give or discuss emergency information yourself. If an emergency is mentioned, call ask_user right away.
-11. When the other party commits to something (a date, a time, a reference number, a next step), call note_commitment. When the line changes (menu, hold, a person, voicemail), call set_line_state. When the goal is done and goodbyes are said, call end_call.
-12. If nothing needs to be said, respond with no text.
+11. When the other party commits to something (a date, a time, a reference number, a next step), call note_commitment and, in the same reply, still answer them out loud. If the LINE STATE below is wrong, call set_line_state. When the goal is done and goodbyes are said, call end_call.
+12. If nothing needs to be said, respond with no text at all (an empty reply, not a description of staying silent).
 
 FACT SHEET (the only personal facts about ${u} you may state):
 ${factLines}
@@ -168,8 +173,12 @@ export type BrainDecision =
   | { kind: 'silence'; why: string }
   | { kind: 'proxy' };
 
-// After these tools there is nothing to say: the key press, state change or note is the reply.
-const SILENT_AFTER_TOOLS = new Set(['press_keys', 'set_line_state', 'note_commitment']);
+// After a key press there is nothing to say: the tones are the reply.
+const SILENT_AFTER_TOOLS = new Set(['press_keys']);
+// A note or a line-state fix is bookkeeping, not an answer: if nothing was said since the
+// other party's last turn, the LLM still owes them one (a question like "Anything else?"
+// must not be met with silence).
+const BOOKKEEPING_TOOLS = new Set(['set_line_state', 'note_commitment']);
 const MAX_TOOL_LOOP_DEPTH = 4;
 
 export function decide(p: ParsedBrainRequest, v: BrainCallView | undefined): BrainDecision {
@@ -184,6 +193,14 @@ export function decide(p: ParsedBrainRequest, v: BrainCallView | undefined): Bra
   if (v.autonomy === 'relay') return { kind: 'silence', why: 'relay-mode' };
   if (v.relayPending) return { kind: 'silence', why: 'user-typing-queued' };
   if (p.lastRole === 'tool' && p.lastToolName && SILENT_AFTER_TOOLS.has(p.lastToolName)) {
+    return { kind: 'silence', why: 'post-tool' };
+  }
+  if (
+    p.lastRole === 'tool' &&
+    p.lastToolName &&
+    BOOKKEEPING_TOOLS.has(p.lastToolName) &&
+    p.answeredSinceUser
+  ) {
     return { kind: 'silence', why: 'post-tool' };
   }
   if (v.onToolLoopDepth() > MAX_TOOL_LOOP_DEPTH) return { kind: 'silence', why: 'tool-loop' };

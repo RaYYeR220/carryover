@@ -54,10 +54,19 @@ describe('decide', () => {
       kind: 'silence',
       why: 'user-typing-queued',
     });
-    for (const tool of ['press_keys', 'set_line_state', 'note_commitment']) {
-      expect(decide({ ...userTurn, lastRole: 'tool', lastToolName: tool }, fakeView(base))).toEqual(
-        { kind: 'silence', why: 'post-tool' },
-      );
+    expect(
+      decide({ ...userTurn, lastRole: 'tool', lastToolName: 'press_keys' }, fakeView(base)),
+    ).toEqual({ kind: 'silence', why: 'post-tool' });
+    // A note or a line-state fix is not an answer: silent only when something was already
+    // said after the other party's turn (live: note_commitment alone left "Anything
+    // else?" unanswered and the call hung).
+    for (const tool of ['set_line_state', 'note_commitment']) {
+      const post = { ...userTurn, lastRole: 'tool' as const, lastToolName: tool };
+      expect(decide({ ...post, answeredSinceUser: true }, fakeView(base))).toEqual({
+        kind: 'silence',
+        why: 'post-tool',
+      });
+      expect(decide(post, fakeView(base))).toEqual({ kind: 'proxy' });
     }
     expect(
       decide({ ...userTurn, lastRole: 'tool', lastToolName: 'ask_user' }, fakeView(base)),
@@ -84,6 +93,20 @@ describe('decide', () => {
 });
 
 describe('systemPrompt', () => {
+  it('says FACT SHEET details directly and keeps share_fact for missing ones (no extra LLM round trip)', () => {
+    const s = systemPrompt(fakeView({ callId: 'call-aaaa-1111' }));
+    expect(s).toMatch(
+      /asks for a detail that is in the FACT SHEET, say it right away in your reply, with no tool call/,
+    );
+    const share = RELAY_TOOLS.find((t) => t.name === 'share_fact');
+    expect(share?.description).toMatch(/^Only for a detail that is NOT in the FACT SHEET/);
+    expect(share?.description).not.toMatch(/before saying it/);
+    expect(s).toMatch(/call note_commitment and, in the same reply, still answer them/);
+    // assist: a detail the GOAL states (which prescription) is said, not asked (live: the
+    // rep's "Which prescription?" became an ask card and the call waited on the user).
+    expect(s).toMatch(/say what the GOAL already states/);
+  });
+
   it('states identity, strict rules, fact sheet, goal and line state', () => {
     const v = fakeView({ callId: 'call-aaaa-1111', autonomy: 'auto', lineState: 'ivr' });
     const s = systemPrompt(v);

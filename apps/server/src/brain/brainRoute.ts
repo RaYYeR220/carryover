@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from '../config.js';
+import { type DebugLog, debugLogFor } from '../debugLog.js';
 import type { ChatMessage, LlmProvider, StreamDelta } from '../llm/provider.js';
 import { checkSentence, type ExtractedFact, splitSentences } from './factGate.js';
 import { type BrainCallView, decide, RELAY_TOOLS, systemPrompt } from './policy.js';
@@ -37,9 +38,22 @@ export interface BrainRouteDeps {
   provider: LlmProvider;
   lookup: (callId: string) => BrainCallView | undefined;
   timing?: Partial<BrainTiming>;
+  debug?: DebugLog; // default: stderr lines when cfg.debug
+}
+
+// What one proxied reply did, for the per-request timing line (never any text).
+interface ProxyStats {
+  llmStartAt?: number;
+  llmFirstTokenAt?: number;
+  tools: string[];
+  chars: number;
+  end?: 'done' | 'blocked' | 'filler' | 'stall' | 'cap' | 'aborted' | 'error';
 }
 
 const TIMEOUT_FILLER = 'Sorry, one moment.';
+// Said before end_call when the LLM hangs up without a word (live: the rep asked "Is there
+// anything else?" and the call just ended).
+const GOODBYE = 'Thank you, goodbye.';
 const DEFAULT_MODEL = 'carryover-brain';
 // Menu navigation ("2", "132") is keyed freely; 4+ digits look like an identifier and
 // must be in the ledger.
@@ -115,6 +129,7 @@ async function runProxy(
   provider: LlmProvider,
   timing: BrainTiming,
   ac: AbortController,
+  stats: ProxyStats,
 ): Promise<void> {
   let buffer = '';
   let textEmitted = false;
@@ -128,6 +143,7 @@ async function runProxy(
     const out = textEmitted ? s : s.trimStart();
     if (!out) return;
     w.text(out);
+    stats.chars += out.length;
     textEmitted = true;
   };
 
@@ -138,6 +154,7 @@ async function runProxy(
       // the call's bookkeeping failing must not let the sentence through
     }
     emitText(`${textEmitted ? ' ' : ''}One moment, let me check with ${view.userName}.`);
+    stats.end = 'blocked';
     stopped = true;
     ac.abort();
   };
@@ -171,12 +188,14 @@ async function runProxy(
     if (!t.name) return;
     // press_keys is held until complete: keying in an invented number over DTMF is as much
     // a fabrication as saying it, so its digits go through the ledger check at the end.
-    if (t.name === 'press_keys') {
+    // end_call is held too, so a goodbye can go before it when nothing was said.
+    if (t.name === 'press_keys' || t.name === 'end_call') {
       t.held = true;
       return;
     }
     if (!t.headerSent) {
       t.headerSent = true;
+      stats.tools.push(t.name);
       w.toolCalls([
         {
           index: tc.index,
@@ -193,17 +212,22 @@ async function runProxy(
 
   const flushHeldTools = () => {
     for (const [index, t] of tools) {
-      if (!t.held || stopped) continue;
-      const digits = t.args.replace(/\D/g, '');
-      if (digits.length >= MIN_GATED_KEYED_DIGITS) {
-        const fact: ExtractedFact = { kind: 'digits', raw: digits, norm: digits };
-        if (!view.ledger.has(fact)) {
-          block(`press_keys ${digits}`, [fact]);
-          return;
+      if (!t.held || stopped || !t.name) continue;
+      if (t.name === 'press_keys') {
+        const digits = t.args.replace(/\D/g, '');
+        if (digits.length >= MIN_GATED_KEYED_DIGITS) {
+          const fact: ExtractedFact = { kind: 'digits', raw: digits, norm: digits };
+          if (!view.ledger.has(fact)) {
+            block(`press_keys ${digits}`, [fact]);
+            return;
+          }
         }
+      } else if (t.name === 'end_call' && !textEmitted) {
+        emitText(GOODBYE);
       }
+      stats.tools.push(t.name);
       w.toolCalls([
-        { index, id: t.id, type: 'function', function: { name: 'press_keys', arguments: t.args } },
+        { index, id: t.id, type: 'function', function: { name: t.name, arguments: t.args } },
       ]);
       toolEmitted = true;
     }
@@ -212,11 +236,13 @@ async function runProxy(
   const keepalive = setInterval(() => w.keepalive(), timing.keepaliveMs);
   const firstOutput = setTimeout(() => {
     if (w.finished || w.hasOutput) return;
+    stats.end = 'filler';
     w.text(TIMEOUT_FILLER);
     w.finish('stop');
     ac.abort();
   }, timing.firstOutputTimeoutMs);
   const hardCap = setTimeout(() => {
+    stats.end ??= 'cap';
     w.finish(finishReason());
     ac.abort();
   }, timing.maxStreamMs);
@@ -227,6 +253,7 @@ async function runProxy(
   const armStall = () => {
     clearTimeout(stall);
     stall = setTimeout(() => {
+      stats.end ??= 'stall';
       w.finish(finishReason());
       ac.abort();
     }, timing.stallMs);
@@ -234,9 +261,13 @@ async function runProxy(
 
   try {
     const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt(view) }, ...history];
+    stats.llmStartAt = Date.now();
     const stream = provider.streamChat(messages, RELAY_TOOLS, ac.signal);
     for await (const d of untilAborted(stream, ac.signal)) {
       if (w.finished) return;
+      if (stats.llmFirstTokenAt === undefined && (d.text || d.toolCalls?.length)) {
+        stats.llmFirstTokenAt = Date.now();
+      }
       for (const tc of d.toolCalls ?? []) onToolDelta(tc);
       if (d.text) {
         buffer += d.text;
@@ -252,9 +283,11 @@ async function runProxy(
       release(buffer);
       flushHeldTools();
     }
+    stats.end ??= 'done';
   } catch (err) {
     // Our own abort (gate block, timeout, client gone) is expected; anything else is an
     // upstream failure: keep whatever was already said and finish cleanly.
+    stats.end ??= ac.signal.aborted ? 'aborted' : 'error';
     if (!(err instanceof Aborted) && !ac.signal.aborted) throw err;
   } finally {
     clearInterval(keepalive);
@@ -268,6 +301,7 @@ async function runProxy(
 
 export function registerBrainRoute(app: FastifyInstance, deps: BrainRouteDeps): void {
   const timing: BrainTiming = { ...DEFAULT_BRAIN_TIMING, ...deps.timing };
+  const debug = deps.debug ?? debugLogFor(deps.cfg);
 
   app.post(
     BRAIN_PATH,
@@ -289,6 +323,15 @@ export function registerBrainRoute(app: FastifyInstance, deps: BrainRouteDeps): 
           .send({ error: { message: 'unauthorized', type: 'invalid_request_error' } });
       }
 
+      const receivedAt = Date.now();
+      const rid = randomUUID().slice(0, 8);
+      let decisionLabel = 'error';
+      let callId: string | undefined;
+      let lastRole: string | undefined;
+      let nonce: string | undefined;
+      let abandoned = false;
+      const stats: ProxyStats = { tools: [], chars: 0 };
+
       reply.hijack();
       const res = reply.raw;
       res.on('error', () => undefined);
@@ -298,6 +341,7 @@ export function registerBrainRoute(app: FastifyInstance, deps: BrainRouteDeps): 
       res.on('close', () => {
         if (!w.finished) {
           // AAI abandoned this request (the other party kept talking): stop the LLM.
+          abandoned = true;
           w.abandon();
           ac.abort();
         }
@@ -305,13 +349,18 @@ export function registerBrainRoute(app: FastifyInstance, deps: BrainRouteDeps): 
 
       try {
         const parsed = parseBrainRequest(req.body);
+        callId = parsed.callTag?.callId;
+        lastRole = parsed.lastRole;
+        nonce = parsed.relayNonce;
         const view = parsed.callTag ? deps.lookup(parsed.callTag.callId) : undefined;
         const decision = decide(parsed, view);
+        decisionLabel = decision.kind === 'silence' ? `silence:${decision.why}` : decision.kind;
         if (decision.kind === 'verbatim') {
           w.text(decision.text);
+          stats.chars = decision.text.length;
         } else if (decision.kind === 'proxy' && view) {
           w.role(); // first bytes out right away
-          await runProxy(w, view, parsed.history, deps.provider, timing, ac);
+          await runProxy(w, view, parsed.history, deps.provider, timing, ac, stats);
         } else {
           req.log.debug(
             { why: decision.kind === 'silence' ? decision.why : 'no-view' },
@@ -322,6 +371,22 @@ export function registerBrainRoute(app: FastifyInstance, deps: BrainRouteDeps): 
         req.log.warn({ err: (err as Error)?.message }, 'brain: failed, answering with silence');
       } finally {
         w.finish('stop');
+        const since = (at: number | undefined) => (at === undefined ? undefined : at - receivedAt);
+        debug('brain.request', {
+          rid,
+          call: callId?.slice(0, 8),
+          received_at: receivedAt,
+          decision: decisionLabel,
+          last_role: lastRole,
+          nonce,
+          llm_start_ms: since(stats.llmStartAt),
+          llm_first_token_ms: since(stats.llmFirstTokenAt),
+          first_byte_ms: since(w.firstOutputAt),
+          done_ms: Date.now() - receivedAt,
+          end: abandoned ? 'abandoned' : stats.end,
+          tools: stats.tools.length > 0 ? stats.tools : undefined,
+          chars: stats.chars,
+        });
       }
     },
   );

@@ -7,7 +7,12 @@ import {
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Config } from '../../src/config.js';
-import { createProvider, type StreamDelta, type ToolDef } from '../../src/llm/provider.js';
+import {
+  createProvider,
+  llmParams,
+  type StreamDelta,
+  type ToolDef,
+} from '../../src/llm/provider.js';
 
 function baseConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -154,6 +159,81 @@ describe('createProvider', () => {
         },
       },
     ]);
+  });
+
+  it('carries the per-model Venice params and LLM_PARAMS on every request', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const url = await startFakeChatServer((req, res) => {
+      bodies.push(req.body);
+      if (req.body.stream) {
+        sendSse(res, [
+          { id: 'c1', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] },
+        ]);
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            id: 'c2',
+            object: 'chat.completion',
+            created: 0,
+            model: 'x',
+            choices: [
+              { index: 0, message: { role: 'assistant', content: '{}' }, finish_reason: 'stop' },
+            ],
+          }),
+        );
+      }
+    });
+
+    const fast = createProvider(baseConfig({ llmModel: 'openai-gpt-54-mini' }), url);
+    for await (const _ of fast.streamChat([{ role: 'user', content: 'hi' }])) {
+      // drain
+    }
+    await fast.complete([{ role: 'user', content: 'sum up' }], { json: true });
+    for (const b of bodies) {
+      expect(b).toMatchObject({
+        model: 'openai-gpt-54-mini',
+        reasoning: { enabled: false },
+        venice_parameters: { include_venice_system_prompt: false },
+      });
+    }
+
+    bodies.length = 0;
+    const tuned = createProvider(
+      baseConfig({
+        llmModel: 'gemini-3-5-flash-lite',
+        llmParams: { venice_parameters: { strip_thinking_response: true }, max_tokens: 200 },
+      }),
+      url,
+    );
+    for await (const _ of tuned.streamChat([{ role: 'user', content: 'hi' }])) {
+      // drain
+    }
+    expect(bodies[0]).toMatchObject({
+      max_tokens: 200,
+      venice_parameters: {
+        include_venice_system_prompt: false,
+        disable_thinking: true,
+        strip_thinking_response: true,
+      },
+    });
+  });
+
+  it('llmParams: Venice defaults per model, only LLM_PARAMS for the AAI gateway', () => {
+    expect(llmParams({ llmProvider: 'venice', llmModel: 'some-new-model' })).toEqual({
+      venice_parameters: { include_venice_system_prompt: false },
+    });
+    expect(
+      llmParams({ llmProvider: 'aai-gateway', llmModel: 'claude', llmParams: { max_tokens: 9 } }),
+    ).toEqual({ max_tokens: 9 });
+    // LLM_PARAMS wins over a per-model default.
+    expect(
+      llmParams({
+        llmProvider: 'venice',
+        llmModel: 'openai-gpt-54-mini',
+        llmParams: { reasoning: { enabled: true, effort: 'low' } },
+      }),
+    ).toMatchObject({ reasoning: { enabled: true, effort: 'low' } });
   });
 
   it('sends Bearer auth for venice and the raw key for aai-gateway', async () => {

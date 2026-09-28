@@ -11,10 +11,17 @@ export interface Config {
   aaiStreamingUrl: string;
   aaiAgentsWsUrl: string;
   aaiAgentsRestUrl: string;
+  // LOG_LEVEL=debug: structured timing lines on stderr (src/debugLog.ts).
+  debug?: boolean;
+  // LLM_PARAMS: extra JSON body params for every LLM request, merged over the provider's
+  // per-model defaults (e.g. {"reasoning":{"enabled":false}}).
+  llmParams?: Record<string, unknown>;
 }
 
 const DEFAULT_MODEL: Record<Config['llmProvider'], string> = {
-  venice: 'gemini-3-8-flash',
+  // Fastest Venice model that handled every Brain benchmark turn (scripts/bench-brain.ts):
+  // ~0.8 s to the first token with thinking off (see VENICE_MODEL_PARAMS in llm/provider.ts).
+  venice: 'gemini-3-5-flash-lite',
   'aai-gateway': 'claude-sonnet-4-6',
 };
 
@@ -30,7 +37,23 @@ const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url('PUBLIC_BASE_URL must be a valid URL'),
   BRAIN_SECRET: z.string().min(1, 'BRAIN_SECRET is required'),
   PORT: z.coerce.number().int().positive().optional(),
+  LOG_LEVEL: z.string().optional(),
+  LLM_PARAMS: z.string().optional(),
 });
+
+function parseLlmParams(raw: string | undefined): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    throw new Error('LLM_PARAMS must be a JSON object');
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error('LLM_PARAMS must be a JSON object');
+  }
+  return v as Record<string, unknown>;
+}
 
 // Empty-string env vars (unset in the shell but present as "" in some launchers)
 // should behave like "not set", not like an invalid value.
@@ -47,6 +70,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     PUBLIC_BASE_URL: orUndef(env.PUBLIC_BASE_URL),
     BRAIN_SECRET: orUndef(env.BRAIN_SECRET),
     PORT: orUndef(env.PORT),
+    LOG_LEVEL: orUndef(env.LOG_LEVEL),
+    LLM_PARAMS: orUndef(env.LLM_PARAMS),
   });
 
   const llmProvider = parsed.LLM_PROVIDER ?? 'venice';
@@ -65,5 +90,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     aaiStreamingUrl: AAI_STREAMING_URL,
     aaiAgentsWsUrl: AAI_AGENTS_WS_URL,
     aaiAgentsRestUrl: AAI_AGENTS_REST_URL,
+    debug: parsed.LOG_LEVEL === 'debug',
+    llmParams: parseLlmParams(parsed.LLM_PARAMS),
   };
 }

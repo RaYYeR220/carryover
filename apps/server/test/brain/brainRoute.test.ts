@@ -255,6 +255,145 @@ describe('brain route: routing, auth and silence (Review Focus 2)', () => {
   });
 });
 
+describe('brain route: after bookkeeping tools', () => {
+  // Live run (riverside): the rep said "It'll be ready Thursday after 2 PM, reference
+  // 4471. Is there anything else you need?", the LLM answered with note_commitment only,
+  // the post-tool request was answered with silence and the call hung for two minutes.
+  const noteOnly = (answer?: string) =>
+    body(
+      CALL_A,
+      them("It'll be ready Thursday after 2 PM, reference 4471. Is there anything else you need?"),
+      ...(answer ? [{ role: 'assistant', content: answer }] : []),
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call_n1',
+            type: 'function',
+            function: { name: 'note_commitment', arguments: '{"text":"Refill ready"}' },
+          },
+        ],
+      } as unknown as { role: string; content: string },
+      { role: 'tool', tool_call_id: 'call_n1', content: '{"status":"noted"}' } as unknown as {
+        role: string;
+        content: string;
+      },
+      {
+        role: 'system',
+        content:
+          "The function call note_commitment(text='Refill ready') has just completed. Do not read out raw data verbatim.",
+      },
+    );
+
+  it('note_commitment with nothing said yet → the LLM still answers the open question', async () => {
+    const provider = new FakeProvider(textScript('No, that is everything. Thank you!'));
+    const { app: a } = makeApp(provider, [fakeView({ callId: CALL_A })]);
+    const { sse } = await post(a, noteOnly());
+    expect(provider.calls).toHaveLength(1);
+    expect(sse.text).toBe('No, that is everything. Thank you!');
+  });
+
+  it('note_commitment after an answer was already spoken → silence (no second answer)', async () => {
+    const provider = new FakeProvider(never);
+    const { app: a } = makeApp(provider, [fakeView({ callId: CALL_A })]);
+    const { res, sse } = await post(a, noteOnly('Great, thank you. That is all.'));
+    expectEmptyCompletion(res, sse);
+    expect(provider.calls).toHaveLength(0);
+  });
+});
+
+describe('brain route: hanging up', () => {
+  function toolScript(name: string, args: string, text?: string): Script {
+    return async function* () {
+      if (text) yield { text };
+      yield { toolCalls: [{ index: 0, id: 'call_e1', name, argumentsDelta: args }] };
+      yield { done: true };
+    };
+  }
+
+  it('end_call with nothing said → a goodbye goes first (never hang up without a word)', async () => {
+    const provider = new FakeProvider(toolScript('end_call', '{"reason":"done"}'));
+    const { app: a } = makeApp(provider, [fakeView({ callId: CALL_A })]);
+    const { sse } = await post(a, body(CALL_A, them('Is there anything else I can help with?')));
+    expect(sse.text).toBe('Thank you, goodbye.');
+    expect(sse.toolCalls).toEqual([
+      { index: 0, id: 'call_e1', name: 'end_call', args: '{"reason":"done"}' },
+    ]);
+    expect(sse.finish).toEqual(['tool_calls']);
+    // The goodbye is spoken before the hang-up is requested.
+    const firstTool = sse.frames.findIndex((f) => f.choices[0]?.delta.tool_calls);
+    const firstText = sse.frames.findIndex(
+      (f) => typeof f.choices[0]?.delta.content === 'string' && f.choices[0]?.delta.content !== '',
+    );
+    expect(firstText).toBeLessThan(firstTool);
+  });
+
+  it('end_call after the LLM said its own goodbye adds nothing', async () => {
+    const provider = new FakeProvider(
+      toolScript('end_call', '{"reason":"done"}', 'No, that is all. Thanks, bye!'),
+    );
+    const { app: a } = makeApp(provider, [fakeView({ callId: CALL_A })]);
+    const { sse } = await post(a, body(CALL_A, them('Anything else?')));
+    expect(sse.text).toBe('No, that is all. Thanks, bye!');
+    expect(sse.toolCalls.map((t) => t.name)).toEqual(['end_call']);
+  });
+});
+
+describe('brain route: timing lines', () => {
+  function appWithDebug(provider: LlmProvider, views: BrainCallView[]) {
+    const lines: { event: string; fields: Record<string, unknown> }[] = [];
+    const a = Fastify();
+    registerBrainRoute(a, {
+      cfg: cfg(),
+      provider,
+      lookup: (id) => views.find((v) => v.callId === id),
+      debug: (event, fields) => lines.push({ event, fields: fields ?? {} }),
+    });
+    app = a;
+    return { a, lines };
+  }
+
+  it('one line per request with decision, LLM first token, first byte and done, never text', async () => {
+    const said = 'Her date of birth is March 14, 1952.';
+    const provider = new FakeProvider(textScript(said));
+    const { a, lines } = appWithDebug(provider, [fakeView({ callId: CALL_A })]);
+    await post(a, body(CALL_A, them('What is her date of birth?')));
+
+    expect(lines).toHaveLength(1);
+    const { event, fields } = lines[0] as (typeof lines)[number];
+    expect(event).toBe('brain.request');
+    expect(fields).toMatchObject({
+      call: CALL_A.slice(0, 8),
+      decision: 'proxy',
+      last_role: 'user',
+      end: 'done',
+      chars: said.length,
+    });
+    for (const k of ['received_at', 'llm_first_token_ms', 'first_byte_ms', 'done_ms']) {
+      expect(typeof fields[k]).toBe('number');
+    }
+    expect(fields.first_byte_ms as number).toBeGreaterThanOrEqual(
+      fields.llm_first_token_ms as number,
+    );
+    const json = JSON.stringify(fields);
+    expect(json).not.toContain('1952');
+    expect(json).not.toContain('date of birth');
+  });
+
+  it('verbatim and silence decisions are logged with their reason', async () => {
+    const view = fakeView({ callId: CALL_A, autonomy: 'relay' });
+    view.nonces.set('nonce00000009', 'Typed text.');
+    const { a, lines } = appWithDebug(new FakeProvider(never), [view]);
+    await post(a, body(CALL_A, them('Hi?'), nonceMsg('nonce00000009')));
+    await post(a, body(CALL_A, them('Hello?')));
+    expect(lines.map((l) => [l.fields.decision, l.fields.nonce])).toEqual([
+      ['verbatim', 'nonce00000009'],
+      ['silence:relay-mode', undefined],
+    ]);
+  });
+});
+
 describe('brain route: verbatim relay', () => {
   it('verbatim nonce → streamed text equals the stored text exactly', async () => {
     const typed =
