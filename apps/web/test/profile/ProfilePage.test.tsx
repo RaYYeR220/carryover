@@ -6,6 +6,7 @@ import { vault } from '../../src/lib/store';
 import ProfilePage from '../../src/profile/ProfilePage';
 import { loadDescriptor } from '../../src/profile/profileMeta';
 import { resetSeedState } from '../../src/profile/seed';
+import { MAX_FACTS } from '../../src/start/request';
 
 function renderPage() {
   return render(
@@ -105,5 +106,20 @@ describe('ProfilePage: editing', () => {
         value: 'PA-4471',
       });
     });
+  });
+
+  it('caps the vault at 20 facts: disables Add fact and shows a note at the limit', async () => {
+    for (let i = 0; i < MAX_FACTS; i++) {
+      await vault.save({ key: `fact_${i}`, label: `Fact ${i}`, value: `value ${i}` });
+    }
+    expect(await vault.list()).toHaveLength(MAX_FACTS);
+    renderPage();
+
+    expect(await screen.findByLabelText('New fact label')).toBeDisabled();
+    expect(screen.getByLabelText('New fact value')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add fact' })).toBeDisabled();
+    expect(
+      screen.getByText(`You’ve reached the ${MAX_FACTS}-fact limit. Delete one to add another.`),
+    ).toBeInTheDocument();
   });
 });

@@ -1,4 +1,5 @@
 import type { Fact, ScenarioInfo } from '@carryover/protocol';
+import { StartCallRequest as StartCallRequestSchema } from '@carryover/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   buildStartCallRequest,
@@ -8,7 +9,9 @@ import {
   destinationId,
   destinationLabel,
   factNote,
+  MAX_FACTS,
   targetFor,
+  VOICE_LABELS,
   VOICES,
 } from '../../src/start/request';
 
@@ -98,6 +101,57 @@ describe('buildStartCallRequest', () => {
     });
     expect(req.userName).toBe('Maya Chen');
   });
+
+  it('caps the sent facts at the protocol’s 20-fact limit, and the result always parses', () => {
+    const manyFacts: Fact[] = Array.from({ length: 25 }, (_, i) => ({
+      key: `fact_${i}`,
+      label: `Fact ${i}`,
+      value: `value ${i}`,
+    }));
+    const req = buildStartCallRequest({
+      target: { kind: 'line', code: 'ABC123' },
+      userName: 'Maya Chen',
+      userDescriptor: 'deaf',
+      autonomy: 'assist',
+      goal: '',
+      facts: manyFacts,
+      sharedKeys: new Set(manyFacts.map((f) => f.key)),
+      voice: 'alba',
+    });
+    expect(req.facts).toHaveLength(MAX_FACTS);
+    expect(req.facts).toEqual(manyFacts.slice(0, MAX_FACTS));
+    expect(StartCallRequestSchema.safeParse(req).success).toBe(true);
+  });
+
+  it('clamps userName and fact values to the protocol’s limits, so the result always parses', () => {
+    const req = buildStartCallRequest({
+      target: { kind: 'line', code: 'ABC123' },
+      userName: 'M'.repeat(60),
+      userDescriptor: 'deaf',
+      autonomy: 'assist',
+      goal: '',
+      facts: [{ key: 'note', label: 'Note', value: 'x'.repeat(250) }],
+      sharedKeys: new Set(['note']),
+      voice: 'alba',
+    });
+    expect(req.userName).toHaveLength(40);
+    expect(req.facts[0]?.value).toHaveLength(200);
+    expect(StartCallRequestSchema.safeParse(req).success).toBe(true);
+  });
+
+  it('a request built from a small, in-limits vault also parses against the real schema', () => {
+    const req = buildStartCallRequest({
+      target: { kind: 'scenario', scenarioId: 'riverside-pharmacy' },
+      userName: 'Maya Chen',
+      userDescriptor: 'deaf',
+      autonomy: 'assist',
+      goal: '',
+      facts: FACTS,
+      sharedKeys: new Set(['name', 'dob']),
+      voice: 'alba',
+    });
+    expect(StartCallRequestSchema.safeParse(req).success).toBe(true);
+  });
 });
 
 describe('destinations', () => {
@@ -147,5 +201,12 @@ describe('defaults', () => {
   it('notes that the member ID is not shared by default, and nothing else', () => {
     expect(factNote('member_id')).toBe('Not shared by default.');
     expect(factNote('dob')).toBeUndefined();
+  });
+
+  it('labels every voice with its name and AssemblyAI’s documented accent', () => {
+    for (const v of VOICES) expect(VOICE_LABELS[v]).toMatch(/^[A-Z][a-z]+ · [a-z]+, (US|UK)$/);
+    expect(VOICE_LABELS.anna).toContain('UK');
+    expect(VOICE_LABELS.vera).toContain('UK');
+    expect(VOICE_LABELS.alba).toContain('US');
   });
 });

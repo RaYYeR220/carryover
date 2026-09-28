@@ -2,6 +2,7 @@ import type { Fact, UserDescriptor } from '@carryover/protocol';
 import { type FormEvent, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { vault } from '../lib/store';
+import { factNote, MAX_FACTS } from '../start/request';
 import { Button } from '../ui';
 import s from './ProfilePage.module.css';
 import { DESCRIPTOR_OPTIONS, loadDescriptor, saveDescriptor } from './profileMeta';
@@ -68,6 +69,7 @@ export default function ProfilePage() {
 
   const otherFacts = useMemo(() => (facts ?? []).filter((f) => f.key !== NAME_KEY), [facts]);
   const takenKeys = useMemo(() => new Set((facts ?? []).map((f) => f.key)), [facts]);
+  const atFactLimit = (facts?.length ?? 0) >= MAX_FACTS;
 
   const refresh = () => vault.list().then(setFacts);
 
@@ -122,6 +124,10 @@ export default function ProfilePage() {
 
   const addFact = async (e: FormEvent) => {
     e.preventDefault();
+    if (atFactLimit) {
+      setError(`You’ve reached the ${MAX_FACTS}-fact limit. Delete one to add another.`);
+      return;
+    }
     const label = newLabel.trim();
     const value = newValue.trim();
     if (!label || !value) {
@@ -248,7 +254,7 @@ export default function ProfilePage() {
                     <span>
                       <b>{f.label}</b>
                       <span>{f.value}</span>
-                      {factHelp(f.key) && <small>{factHelp(f.key)}</small>}
+                      {factNote(f.key) && <small>{factNote(f.key)}</small>}
                     </span>
                     <span className={s.factActs}>
                       <Button variant="line" size="sm" onClick={() => startEdit(f)}>
@@ -269,6 +275,7 @@ export default function ProfilePage() {
               placeholder="Label, e.g. Pharmacy account"
               value={newLabel}
               maxLength={60}
+              disabled={atFactLimit}
               onChange={(e) => setNewLabel(e.target.value)}
             />
             <input
@@ -276,12 +283,18 @@ export default function ProfilePage() {
               placeholder="Value"
               value={newValue}
               maxLength={200}
+              disabled={atFactLimit}
               onChange={(e) => setNewValue(e.target.value)}
             />
-            <Button type="submit" variant="soft" size="sm">
+            <Button type="submit" variant="soft" size="sm" disabled={atFactLimit}>
               Add fact
             </Button>
           </form>
+          {atFactLimit && (
+            <p className={s.help}>
+              You’ve reached the {MAX_FACTS}-fact limit. Delete one to add another.
+            </p>
+          )}
           {error && (
             <p className={s.error} role="alert">
               {error}
@@ -291,8 +304,4 @@ export default function ProfilePage() {
       </div>
     </div>
   );
-}
-
-function factHelp(key: string): string | undefined {
-  return key === 'member_id' ? 'Not shared by default.' : undefined;
 }

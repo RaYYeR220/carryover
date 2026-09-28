@@ -161,4 +161,28 @@ describe('StartCallPage: starting a call', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Too many calls from this address');
     expect(router.state.location.pathname).toBe('/app/new');
   });
+
+  it('shows a 400 error inline and does not navigate', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.startCall).mockRejectedValue(new ApiError(400, 'That destination is invalid'));
+    const router = renderPage();
+    await screen.findByRole('radio', { name: /Riverside Pharmacy/ });
+
+    await user.click(screen.getByRole('button', { name: 'Call Riverside Pharmacy' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('That destination is invalid');
+    expect(router.state.location.pathname).toBe('/app/new');
+  });
+
+  it('shows a 502 error inline and does not navigate', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.startCall).mockRejectedValue(new ApiError(502, 'The line couldn’t be reached'));
+    const router = renderPage();
+    await screen.findByRole('radio', { name: /Riverside Pharmacy/ });
+
+    await user.click(screen.getByRole('button', { name: 'Call Riverside Pharmacy' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The line couldn’t be reached');
+    expect(router.state.location.pathname).toBe('/app/new');
+  });
 });

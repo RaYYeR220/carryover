@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import HistoryDetailPage from '../../src/history/HistoryDetailPage';
 import type { HistoryEntry } from '../../src/lib/store';
 import { history } from '../../src/lib/store';
@@ -66,5 +66,46 @@ describe('HistoryDetailPage', () => {
     await user.click(screen.getByRole('button', { name: 'Delete this call' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/app/history'));
     expect(await history.get('call1')).toBeUndefined();
+  });
+
+  describe('Add to calendar', () => {
+    let createObjectURL: ReturnType<typeof vi.fn>;
+    let revokeObjectURL: ReturnType<typeof vi.fn>;
+    let clickSpy: ReturnType<typeof vi.spyOn>;
+    let clicked: { download: string; href: string }[];
+
+    beforeEach(() => {
+      clicked = [];
+      createObjectURL = vi.fn(() => 'blob:mock-url');
+      revokeObjectURL = vi.fn();
+      URL.createObjectURL = createObjectURL as unknown as typeof URL.createObjectURL;
+      URL.revokeObjectURL = revokeObjectURL as unknown as typeof URL.revokeObjectURL;
+      clickSpy = vi
+        .spyOn(HTMLAnchorElement.prototype, 'click')
+        .mockImplementation(function mockClick(this: HTMLAnchorElement) {
+          clicked.push({ download: this.download, href: this.href });
+        });
+    });
+
+    afterEach(() => {
+      clickSpy.mockRestore();
+    });
+
+    it('downloads a .ics file built from a text/calendar blob', async () => {
+      const user = userEvent.setup();
+      renderPage('call1');
+      await screen.findByRole('heading', { name: 'Refill ready Thursday' });
+
+      await user.click(screen.getByRole('button', { name: 'Add to calendar' }));
+
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+      const blob = createObjectURL.mock.calls[0]?.[0] as Blob;
+      expect(blob).toBeInstanceOf(Blob);
+      expect(blob.type).toBe('text/calendar');
+
+      expect(clicked).toHaveLength(1);
+      expect(clicked[0]?.download).toBe('riverside-pharmacy.ics');
+      expect(clicked[0]?.href).toBe('blob:mock-url');
+    });
   });
 });

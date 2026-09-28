@@ -18,6 +18,7 @@ import {
   type Destination,
   destinationLabel,
   targetFor,
+  VOICE_LABELS,
   VOICES,
 } from './request';
 import s from './StartCallPage.module.css';
@@ -247,7 +248,7 @@ export default function StartCallPage() {
                   <select value={voice} onChange={(e) => setVoice(e.target.value)}>
                     {VOICES.map((v) => (
                       <option key={v} value={v}>
-                        {capitalize(v)}
+                        {VOICE_LABELS[v]}
                       </option>
                     ))}
                   </select>

@@ -22,10 +22,35 @@ export const VOICES = [
 export type Voice = (typeof VOICES)[number];
 export const DEFAULT_VOICE: Voice = 'alba';
 
+/**
+ * "Name · short, honest descriptor", matching B's voice-picker style. Region
+ * is AssemblyAI's documented accent for each English voice (US, except
+ * anna/charles/paul/vera, which are UK). The adjective is a neutral tone
+ * word, nothing invented beyond that.
+ */
+export const VOICE_LABELS: Record<Voice, string> = {
+  alba: 'Alba · warm, US',
+  jane: 'Jane · clear, US',
+  mary: 'Mary · calm, US',
+  eve: 'Eve · bright, US',
+  jean: 'Jean · steady, US',
+  michael: 'Michael · warm, US',
+  george: 'George · even, US',
+  anna: 'Anna · calm, UK',
+  vera: 'Vera · crisp, UK',
+};
+
 export const DEFAULT_AUTONOMY: Autonomy = 'assist';
 
 /** Fact keys pre-toggled to share the first time the start page is opened. */
 export const DEFAULT_SHARED_KEYS: ReadonlySet<string> = new Set(['name', 'dob']);
+
+/** Mirrors the protocol's `StartCallRequest.facts` cap: the vault (and the profile UI) shouldn't grow past this either. */
+export const MAX_FACTS = 20;
+/** Mirrors the protocol's `StartCallRequest.userName` cap. */
+const MAX_USER_NAME = 40;
+/** Mirrors the protocol's `Fact.value` cap. */
+const MAX_FACT_VALUE = 200;
 
 /** Vault keys the start page notes are "not shared by default", even though they're in the vault. */
 export function factNote(key: string): string | undefined {
@@ -66,18 +91,28 @@ export interface StartSelection {
 
 /**
  * Assembles the exact `StartCallRequest` body the server expects from the
- * user's selections on the start page: only the toggled facts go out, and an
- * empty goal is left off rather than sent as `""`.
+ * user's selections on the start page: only the toggled facts go out, an
+ * empty goal is left off rather than sent as `""`, and everything is clamped
+ * to the protocol's own limits so the result always passes
+ * `StartCallRequest.safeParse` — even if the vault somehow grew past 20
+ * facts (the profile page caps it, but this is the last line of defence
+ * before the request goes out).
  */
 export function buildStartCallRequest(sel: StartSelection): StartCallRequest {
   const goal = sel.goal.trim();
+  const facts = sel.facts
+    .filter((f) => sel.sharedKeys.has(f.key))
+    .slice(0, MAX_FACTS)
+    .map((f) =>
+      f.value.length > MAX_FACT_VALUE ? { ...f, value: f.value.slice(0, MAX_FACT_VALUE) } : f,
+    );
   return {
     target: sel.target,
-    userName: sel.userName.trim(),
+    userName: sel.userName.trim().slice(0, MAX_USER_NAME),
     userDescriptor: sel.userDescriptor,
     autonomy: sel.autonomy,
     ...(goal ? { goal } : {}),
-    facts: sel.facts.filter((f) => sel.sharedKeys.has(f.key)),
+    facts,
     voice: sel.voice,
   };
 }
