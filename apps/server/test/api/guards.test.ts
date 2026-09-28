@@ -6,8 +6,8 @@ describe('clientIp', () => {
     // req.ip is only ever X-Forwarded-For-derived when Fastify's trustProxy config (set in
     // server.ts from a trusted connection) says so; clientIp must not re-parse headers
     // itself, or a caller could bypass that trust decision. Coverage for the actual
-    // trust-boundary behavior (spoofed XFF ignored/accepted depending on trustProxyHops)
-    // lives in routes.test.ts and mcp.test.ts, against a real server.
+    // trust-boundary behavior (spoofed XFF ignored/accepted depending on trustProxy) lives
+    // in routes.test.ts and mcp.test.ts, against a real server.
     expect(clientIp({ ip: '10.0.0.9' })).toBe('10.0.0.9');
     // A header on the request object must have no effect -- clientIp only reads .ip.
     const withHeaders = { ip: '10.0.0.9', headers: { 'x-forwarded-for': '1.2.3.4' } };

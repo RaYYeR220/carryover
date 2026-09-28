@@ -13,10 +13,10 @@ type Server = Awaited<ReturnType<typeof startTestServer>>;
 
 // A server whose relay agent lookup always fails: every call's start() rejects (502) right
 // away, so it never occupies a concurrency slot -- only the rate limiter is exercised.
-function createFailingServer(opts: { trustProxyHops?: number } = {}) {
+function createFailingServer(opts: { trustProxy?: string | false } = {}) {
   return createServer({
     cfg: cfg(),
-    trustProxyHops: opts.trustProxyHops,
+    trustProxy: opts.trustProxy,
     overrides: {
       agents: {
         ensureRelayAgent: async () => {
@@ -237,7 +237,7 @@ describe('REST API', () => {
   it('enforces a per-IP rate limit of 10 calls/hour', async () => {
     // A separate server whose relay agent lookup always fails: every call's start()
     // rejects (502) right away, so it never occupies a concurrency slot and this test
-    // only exercises the rate limiter. Default trustProxyHops under vitest is 0, so every
+    // only exercises the rate limiter. Default trustProxy under vitest is off, so every
     // inject() call (no X-Forwarded-For sent) resolves to the same untrusted socket ip.
     const failing = await createFailingServer();
     try {
@@ -261,16 +261,19 @@ describe('REST API', () => {
     }
   });
 
-  it('with a trusted proxy hop, keys the rate limit on the proxy-appended rightmost X-Forwarded-For entry, not the spoofable leftmost one', async () => {
-    const failing = await createFailingServer({ trustProxyHops: 1 });
+  it("behind a private-network proxy (e.g. Render's load balancer on a 10.x address), keys the rate limit on the proxy-appended rightmost X-Forwarded-For entry, not the spoofable leftmost one", async () => {
+    const failing = await createFailingServer({ trustProxy: 'loopback,linklocal,uniquelocal' });
     try {
       for (let i = 0; i < 10; i++) {
         const res = await failing.app.inject({
           method: 'POST',
           url: '/api/calls',
-          // A different "client" claimed on every call, but the same value our (trusted,
-          // loopback) proxy would have appended -- these must all count against one bucket.
-          headers: { 'x-forwarded-for': `1.2.3.${i}, 9.9.9.9` },
+          // The immediate peer is a private-range address (Render's load balancer, not
+          // loopback), and a different "client" is claimed on every call -- but the
+          // rightmost X-Forwarded-For entry (what a trusted proxy actually appends) stays
+          // the same, so these must all count against one bucket.
+          remoteAddress: '10.1.2.3',
+          headers: { 'x-forwarded-for': `6.6.6.${i}, 203.0.113.9` },
           payload: validCallRequest(),
         });
         expect(res.statusCode).toBe(502);
@@ -278,7 +281,8 @@ describe('REST API', () => {
       const res = await failing.app.inject({
         method: 'POST',
         url: '/api/calls',
-        headers: { 'x-forwarded-for': '1.2.3.99, 9.9.9.9' },
+        remoteAddress: '10.1.2.3',
+        headers: { 'x-forwarded-for': '6.6.6.99, 203.0.113.9' },
         payload: validCallRequest(),
       });
       expect(res.statusCode).toBe(429);
@@ -287,8 +291,30 @@ describe('REST API', () => {
     }
   });
 
+  it('gives two different real clients behind the same private-network proxy separate rate-limit buckets', async () => {
+    const failing = await createFailingServer({ trustProxy: 'loopback,linklocal,uniquelocal' });
+    try {
+      const callAs = async (ip: string) =>
+        failing.app.inject({
+          method: 'POST',
+          url: '/api/calls',
+          remoteAddress: '10.1.2.3',
+          headers: { 'x-forwarded-for': ip },
+          payload: validCallRequest(),
+        });
+      for (let i = 0; i < 10; i++) {
+        expect((await callAs('203.0.113.9')).statusCode).toBe(502);
+      }
+      // Client A's quota is used up, but client B (through the same proxy) is unaffected.
+      expect((await callAs('203.0.113.9')).statusCode).toBe(429);
+      expect((await callAs('198.51.100.7')).statusCode).toBe(502);
+    } finally {
+      await failing.close();
+    }
+  });
+
   it('without a trusted proxy, ignores X-Forwarded-For entirely for the rate limit', async () => {
-    const failing = await createFailingServer({ trustProxyHops: 0 });
+    const failing = await createFailingServer({ trustProxy: false });
     try {
       for (let i = 0; i < 10; i++) {
         const res = await failing.app.inject({

@@ -29,10 +29,11 @@ const SHUTDOWN_CAP_MS = 5000;
 export interface CreateServerOptions {
   cfg?: Config;
   overrides?: Partial<CallDeps>;
-  // See resolveTrustProxy(): 0 disables X-Forwarded-For trust entirely (the default under
-  // tests), > 0 trusts it from a loopback-local reverse proxy (the default otherwise, e.g.
-  // the cloudflared tunnel in front of a real deployment).
-  trustProxyHops?: number;
+  // A comma-separated list of trusted proxy presets/ranges ('loopback', 'linklocal',
+  // 'uniquelocal', or explicit CIDRs), passed straight to Fastify's trustProxy -- Fastify
+  // itself splits the string on commas. `false` disables X-Forwarded-For trust entirely.
+  // See defaultTrustProxy() for the default.
+  trustProxy?: string | false;
 }
 
 export interface CreatedServer {
@@ -59,24 +60,21 @@ function defaultCallDeps(cfg: Config): CallDeps {
   };
 }
 
-// This Fastify version deliberately no-ops a bare hop-count number: getTrustProxyFn(n)
-// always returns false for a number, because a hop count alone can't verify who the
-// immediate peer actually is (see fastify/lib/request.js). Our one real hop (cloudflared,
-// or any reverse proxy in front of this process) always connects over loopback, so we trust
-// X-Forwarded-For exactly when the direct connection is loopback -- that is both correct
-// for this deployment and immune to a caller spoofing the header on a direct connection.
-function resolveTrustProxy(hops: number): boolean | 'loopback' {
-  return hops > 0 ? 'loopback' : false;
-}
-
-function defaultTrustProxyHops(): number {
-  const raw = process.env.TRUST_PROXY_HOPS;
-  if (raw !== undefined && raw !== '') {
-    const n = Number(raw);
-    if (Number.isFinite(n) && n >= 0) return n;
-  }
+// This Fastify version deliberately no-ops a bare hop-count number for trustProxy:
+// getTrustProxyFn(n) always returns false for a number, because a hop count alone can't
+// verify who the immediate peer actually is (see fastify/lib/request.js) -- so
+// Fastify({ trustProxy: 1 }) would silently trust nothing. We trust our reverse proxy by
+// its actual address range instead. That range isn't always loopback: behind cloudflared
+// it's local (127.0.0.1), but on a host like Render the immediate peer is the platform's
+// load balancer on a private address (10.x/172.16.x/192.168.x -- "uniquelocal"), not
+// loopback. Trusting only 'loopback' there would make req.ip resolve to the load balancer
+// for every visitor, merging every real caller into one rate-limit bucket. Trust both.
+function defaultTrustProxy(): string | false {
+  const raw = process.env.TRUST_PROXY;
+  if (raw !== undefined && raw !== '') return raw;
   // vitest sets this; tests default to no proxy trust unless a test opts in explicitly.
-  return process.env.VITEST ? 0 : 1;
+  if (process.env.VITEST) return false;
+  return 'loopback,linklocal,uniquelocal';
 }
 
 function withTimeout(p: Promise<unknown>, ms: number): Promise<void> {
@@ -91,11 +89,11 @@ function withTimeout(p: Promise<unknown>, ms: number): Promise<void> {
 
 export async function createServer(opts: CreateServerOptions = {}): Promise<CreatedServer> {
   const cfg = opts.cfg ?? loadConfig();
-  const trustProxyHops = opts.trustProxyHops ?? defaultTrustProxyHops();
+  const trustProxy = opts.trustProxy ?? defaultTrustProxy();
   const app = Fastify({
     bodyLimit: BODY_LIMIT_BYTES,
     logger: false,
-    trustProxy: resolveTrustProxy(trustProxyHops),
+    trustProxy,
     // A stateless MCP client's standalone GET listen stream stays open indefinitely by
     // design (server.ts's registerMcp() never sends unsolicited notifications on it, so it
     // just waits). Without this, app.close() would wait for that connection to end on its
