@@ -23,6 +23,8 @@ export class VoiceAgentSession {
   private readonly opts: VoiceAgentOptions;
   private ws: WebSocket | undefined;
   private _sessionId: string | undefined;
+  private endRequested = false;
+  private serverEnded = false;
 
   constructor(opts: VoiceAgentOptions) {
     const hasAgentId = opts.agentId !== undefined;
@@ -37,7 +39,37 @@ export class VoiceAgentSession {
     return this._sessionId;
   }
 
+  // A dropped socket can be resumed: the session is known, we did not end it, and the
+  // server did not end it either (session.ended before a close means "done, don't resume").
+  get resumable(): boolean {
+    return this._sessionId !== undefined && !this.endRequested && !this.serverEnded;
+  }
+
   connect(): Promise<void> {
+    const session =
+      this.opts.agentId !== undefined ? { agent_id: this.opts.agentId } : this.opts.initialSession;
+    return this.open({ type: 'session.update', session }, 'connect');
+  }
+
+  // After an unexpected drop: a new socket whose first message is session.resume with the
+  // previous session_id. AAI keeps a dropped session for 30 s. Resolves on session.ready;
+  // rejects when the server refuses (session_not_found and friends close the socket) or
+  // nothing is ready within the connect timeout.
+  resume(): Promise<void> {
+    const sessionId = this._sessionId;
+    if (sessionId === undefined) return Promise.reject(new Error('no session to resume'));
+    if (this.endRequested) return Promise.reject(new Error('the session was ended'));
+    const old = this.ws;
+    if (old && old.readyState !== WebSocket.CLOSED) {
+      // Only the new socket speaks for the session from here on.
+      old.removeAllListeners();
+      old.on('error', () => undefined);
+      old.terminate();
+    }
+    return this.open({ type: 'session.resume', session_id: sessionId }, 'resume');
+  }
+
+  private open(first: Record<string, unknown>, what: string): Promise<void> {
     const ws = new WebSocket(this.opts.url ?? DEFAULT_URL, {
       headers: { Authorization: `Bearer ${this.opts.apiKey}` },
     });
@@ -45,49 +77,49 @@ export class VoiceAgentSession {
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      const timer = setTimeout(() => {
+      const fail = (err: Error) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
         // Never leave a half-open socket behind: a stalled handshake (TCP
         // connected but no upgrade / no session.ready) leaves the WebSocket
         // stuck in CONNECTING forever otherwise, and end() can't clean up a
         // socket that never finished connecting.
         ws.terminate();
-        reject(new Error('VoiceAgentSession.connect timed out waiting for session.ready'));
+        fail(new Error(`VoiceAgentSession.${what} timed out waiting for session.ready`));
       }, this.opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
 
       ws.on('open', () => {
-        const session =
-          this.opts.agentId !== undefined
-            ? { agent_id: this.opts.agentId }
-            : this.opts.initialSession;
-        this.send({ type: 'session.update', session });
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(first));
       });
 
       ws.on('message', (data, isBinary) => {
         const ev = parseEvent(data, isBinary);
         if (!ev) return;
         if (ev.type === 'session.ready') {
-          this._sessionId = typeof ev.session_id === 'string' ? ev.session_id : undefined;
+          if (typeof ev.session_id === 'string') this._sessionId = ev.session_id;
           if (!settled) {
             settled = true;
             clearTimeout(timer);
             resolve();
           }
+        } else if (ev.type === 'session.ended') {
+          this.serverEnded = true;
         }
-        this.opts.onEvent(ev);
+        if (this.ws === ws) this.opts.onEvent(ev);
       });
 
-      ws.on('error', (err) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          reject(err);
-        }
-      });
+      ws.on('error', (err) => fail(err));
 
       ws.on('close', (code, reason) => {
-        this.opts.onClose(code, reason.toString());
+        // Closed before session.ready: the server refused (a resume of an expired
+        // session, a bad agent) -- no need to wait out the timeout.
+        fail(new Error(`VoiceAgentSession.${what}: socket closed (${code}) before session.ready`));
+        if (this.ws === ws) this.opts.onClose(code, reason.toString());
       });
     });
   }
@@ -114,6 +146,7 @@ export class VoiceAgentSession {
   }
 
   end(): Promise<void> {
+    this.endRequested = true;
     const ws = this.ws;
     if (!ws) {
       return Promise.resolve();

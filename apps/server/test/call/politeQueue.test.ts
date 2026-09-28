@@ -350,4 +350,24 @@ describe('PoliteQueue', () => {
     expect(again).not.toBe(spokenNonce);
     expect(h.spoken.map((x) => x.nonce)).toEqual([spokenNonce, again]);
   });
+
+  it('requeueUnspoken puts text sent into a dropped socket back in front, in send order', () => {
+    const h = harness();
+    const talk = themTalking(h);
+    const [a] = h.q.push('Sent first.');
+    const [b] = h.q.push('Sent second.');
+    h.advance(100);
+    expect(h.spoken.map((x) => x.nonce)).toEqual([a, b]);
+    talk();
+    const [c] = h.q.push('Still waiting.');
+    const [taken] = [a];
+    h.q.take(taken as string); // the Brain pulled the first one before the drop
+
+    h.q.requeueUnspoken();
+    expect(h.q.waiting).toBe(2);
+    h.line.them = false;
+    h.advance(1000);
+    expect(h.spoken.map((x) => x.nonce)).toEqual([a, b, b, c]);
+    expect(h.q.take(b as string)).toBe('Sent second.');
+  });
 });

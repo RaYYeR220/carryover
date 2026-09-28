@@ -43,7 +43,15 @@ import { summarize } from './summary.js';
 
 export type VoiceAgentLike = Pick<
   VoiceAgentSession,
-  'sessionId' | 'connect' | 'updateSession' | 'sendAudio' | 'replyCreate' | 'toolResult' | 'end'
+  | 'sessionId'
+  | 'resumable'
+  | 'connect'
+  | 'resume'
+  | 'updateSession'
+  | 'sendAudio'
+  | 'replyCreate'
+  | 'toolResult'
+  | 'end'
 >;
 export type CaptionsLike = Pick<
   CaptionsStream,
@@ -94,6 +102,12 @@ const TURN_SETTLE_MAX_MS = 3000;
 const END_DRAIN_MAX_MS = 15_000; // end_call: longest wait for the goodbye to play out
 const DISCLOSURE_REARM_MS = 10_000; // human → voicemail this fast: the "person" was a recording
 const REPEAT_PRESS_MS = 5000; // the same press_keys again this soon is a re-press, skipped
+// A Voice Agent socket that drops mid-call is resumed (AAI keeps the session 30 s): one
+// attempt after each delay, then the call ends. At most this many drops per call.
+const VA_RESUME_DELAYS_MS = [500, 2000];
+const VA_MAX_RESUMES = 3;
+const VA_RECONNECTING_MESSAGE = 'Reconnecting voice…';
+const VA_RECONNECTED_MESSAGE = 'Voice reconnected.';
 // Turn-taking from the inbound level. Caption partials arrive ~1.3 s apart while someone
 // talks and the Voice Agent's speech events trail the audio by 0.4-1.6 s (live run), so
 // between them a talking person can look quiet. The level is live.
@@ -199,6 +213,8 @@ export class CallSession {
   // Events from a Voice Agent / captions socket that never finished connecting are the
   // connect's failure, handled by start()'s catch, not a call-ending event.
   private vaConnected = false;
+  private vaReconnecting = false;
+  private vaResumes = 0;
   private captionsConnected = false;
   private disclosureQueued = false;
   private disclosureRearmed = false;
@@ -256,7 +272,7 @@ export class CallSession {
         themSpeaking: () => this.themSpeaking(),
         agentSpeaking: () => this.agentSpeaking(),
         msSinceThemAudio: () => this.msSinceThemAudio(),
-        ready: () => this.connectedAt !== undefined && !this.ending,
+        ready: () => this.connectedAt !== undefined && !this.ending && !this.vaReconnecting,
         settling: () => this.turnSettling(),
       },
       (nonce, text) => this.speakRelay(nonce, text),
@@ -713,9 +729,52 @@ export class CallSession {
 
   private onVaClose(code: number, reason: string): void {
     // Before connect() resolved, a close is the connect failing: start() rejects for it.
-    if (this.ending || !this.vaConnected) return;
+    // While resuming, a failed attempt's socket closing is that attempt's failure.
+    if (this.ending || !this.vaConnected || this.vaReconnecting) return;
     this.log('voice agent socket closed', { code, reason });
     this.debug('va.closed', { code });
+    // A clean close (1000) is the server ending the session; anything else is a drop.
+    if (code !== 1000 && this.va?.resumable && this.vaResumes < VA_MAX_RESUMES) {
+      void this.resumeVa();
+      return;
+    }
+    void this.end('voice-agent-closed');
+  }
+
+  // The Voice Agent socket dropped: resume the same session on a new socket so the call
+  // (and AAI's conversation context) carries on. Meanwhile the other party's audio is
+  // dropped, not buffered (a burst of stale audio would confuse turn-taking), typed text
+  // waits, and whatever reply was in flight is treated as over.
+  private async resumeVa(): Promise<void> {
+    const va = this.va;
+    if (!va) return;
+    this.vaResumes++;
+    this.vaReconnecting = true;
+    if (this.replyInFlight !== undefined) this.recoverStalledReply(this.now());
+    this.awaitingReplyUntil = 0;
+    this.emit({ t: 'error', message: VA_RECONNECTING_MESSAGE });
+    for (const delay of VA_RESUME_DELAYS_MS) {
+      await new Promise<void>((resolve) => this.armTimer(resolve, delay));
+      if (this.ending) return;
+      const startedAt = this.now();
+      try {
+        await va.resume();
+      } catch (err) {
+        this.log('voice agent resume failed', err);
+        this.debug('va.resume_failed', { ms: this.now() - startedAt });
+        if (this.ending) return;
+        continue;
+      }
+      if (this.ending) return;
+      this.vaReconnecting = false;
+      this.debug('va.resumed', { ms: this.now() - startedAt });
+      this.emit({ t: 'error', message: VA_RECONNECTED_MESSAGE });
+      // Typed text sent into the dead socket was never spoken: say it now.
+      this.queue.requeueUnspoken();
+      this.queue.tick(this.now());
+      return;
+    }
+    this.vaReconnecting = false;
     void this.end('voice-agent-closed');
   }
 
@@ -909,7 +968,7 @@ export class CallSession {
     const now = this.now();
     const level = rmsDbfs(chunk);
     try {
-      this.va?.sendAudio(chunk);
+      if (!this.vaReconnecting) this.va?.sendAudio(chunk);
     } catch (err) {
       this.log('voice agent audio send failed', err);
     }

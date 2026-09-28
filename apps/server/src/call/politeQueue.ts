@@ -56,6 +56,7 @@ interface Item {
 
 interface Stored {
   text: string;
+  urgent: boolean;
   sentAt?: number;
 }
 
@@ -97,7 +98,7 @@ export class PoliteQueue {
     }
     const nonces = parts.map((part) => {
       const nonce = randomBytes(8).toString('hex');
-      this.texts.set(nonce, { text: part });
+      this.texts.set(nonce, { text: part, urgent });
       this.items.push({ nonce, text: part, urgent });
       return nonce;
     });
@@ -129,6 +130,10 @@ export class PoliteQueue {
     for (let i = 0; i <= last; i++) {
       const it = this.items[i];
       if (it) it.urgent = true;
+    }
+    for (const it of matched) {
+      const stored = this.texts.get(it.nonce);
+      if (stored) stored.urgent = true;
     }
     this.tick(this.now());
     return matched.map((it) => it.nonce);
@@ -211,6 +216,22 @@ export class PoliteQueue {
     const i = this.items.findIndex((it) => it.nonce === nonce);
     if (i >= 0) this.items.splice(i, 1);
     return stored.text;
+  }
+
+  // After the Voice Agent socket was replaced: utterances sent moments ago that the Brain
+  // never pulled were lost with the old socket. They go back to the front of the queue,
+  // in the order they were sent, with the same nonces.
+  requeueUnspoken(): void {
+    const now = this.now();
+    const lost = [...this.texts.entries()]
+      .filter(([, s]) => s.sentAt !== undefined && now - s.sentAt < SENT_PENDING_MS)
+      .sort(([, a], [, b]) => (a.sentAt ?? 0) - (b.sentAt ?? 0));
+    const items: Item[] = lost.map(([nonce, s]) => {
+      s.sentAt = undefined;
+      return { nonce, text: s.text, urgent: s.urgent };
+    });
+    this.items.unshift(...items);
+    this.ownActive = false;
   }
 
   clear(): void {

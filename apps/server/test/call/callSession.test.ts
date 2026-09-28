@@ -260,6 +260,125 @@ describe('CallSession start', () => {
   });
 });
 
+describe('CallSession voice agent resume', () => {
+  const frame = () => Buffer.alloc(800, 0xff);
+  const errors = (events: AppEvent[]) => all(events, 'error').map((e) => e.message);
+
+  it('resumes the session after an abnormal close (1006) and the call carries on', async () => {
+    const { session, leg, va, cap, events } = await setup();
+    const tagged = { system_prompt: `[[carryover-call:${session.id}]] relay session` };
+    leg.emitAudio(frame());
+    expect(va.audio).toHaveLength(1);
+
+    va.close(1006, '');
+    expect(errors(events)).toEqual(['Reconnecting voice…']);
+    // While reconnecting the other party's audio is dropped, not buffered, for the Voice
+    // Agent; the captions keep getting it.
+    leg.emitAudio(frame());
+    leg.emitAudio(frame());
+    expect(va.audio).toHaveLength(1);
+    expect(cap.audio).toHaveLength(3);
+
+    await advance(499);
+    expect(va.resumeCalls).toBe(0);
+    await advance(1);
+    expect(va.resumeCalls).toBe(1);
+    expect(errors(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
+    // The resumed session is tagged again (session.ready → call tag) and hears the line.
+    expect(va.updates).toEqual([tagged, tagged]);
+    leg.emitAudio(frame());
+    expect(va.audio).toHaveLength(2);
+
+    expect(session.lineState).not.toBe('ended');
+    expect(va.endCalls).toBe(0);
+    expect(leg.hangups).toEqual([]);
+    expect(alertKinds(events)).not.toContain('call-ended');
+  });
+
+  it('retries once after 2 s when the first resume fails, then carries on', async () => {
+    const { session, va, events } = await setup();
+    va.resumeOutcomes = ['reject', 'ready'];
+    va.close(1006, '');
+    await advance(500);
+    expect(va.resumeCalls).toBe(1);
+    // The refused socket closing is that attempt's failure, not a new drop.
+    expect(errors(events)).toEqual(['Reconnecting voice…']);
+    await advance(1999);
+    expect(va.resumeCalls).toBe(1);
+    await advance(1);
+    expect(va.resumeCalls).toBe(2);
+    expect(errors(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
+    expect(session.lineState).not.toBe('ended');
+  });
+
+  it('a clean close (1000) or a session the server ended is not resumed', async () => {
+    const a = await setup();
+    a.va.close(1000, 'bye');
+    await advance(0);
+    expect(a.va.resumeCalls).toBe(0);
+    expect(a.session.lineState).toBe('ended');
+
+    const b = await setup();
+    b.va.serverEnded = true;
+    b.va.close(1006, '');
+    await advance(3000);
+    expect(b.va.resumeCalls).toBe(0);
+    expect(b.session.lineState).toBe('ended');
+  });
+
+  it('hanging up while reconnecting stops the attempts and leaves no timers behind', async () => {
+    const { session, va } = await setup();
+    va.resumeOutcomes = ['hang'];
+    va.close(1006, '');
+    await advance(500);
+    expect(va.resumeCalls).toBe(1);
+    session.handleCommand({ t: 'hangup' });
+    await advance(0);
+    expect(va.endCalls).toBe(1);
+    await advance(5000);
+    expect(va.resumeCalls).toBe(1);
+    await session.finished;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('typed text waits during the reconnect, and text lost with the old socket is re-sent', async () => {
+    const { session, va } = await setup();
+    session.handleCommand({ t: 'say', text: 'Lost with the socket.' });
+    expect(va.replyCreates).toHaveLength(1);
+    const lost = va.nonces[0] as string;
+
+    va.close(1006, '');
+    session.handleCommand({ t: 'say', text: 'Typed while reconnecting.' });
+    await advance(400);
+    expect(va.replyCreates).toHaveLength(1);
+
+    await advance(100); // resumed
+    expect(va.nonces).toEqual([lost, lost]);
+    expect(session.brainView().takeNonce(lost)).toBe('Lost with the socket.');
+    va.emit({ type: 'reply.started', reply_id: 'r1' });
+    va.emit({ type: 'reply.done', reply_id: 'r1', status: 'completed' });
+    await advance(100);
+    expect(va.replyCreates).toHaveLength(3);
+    expect(session.brainView().takeNonce(va.nonces[2] as string)).toBe('Typed while reconnecting.');
+  });
+
+  it('a reply in flight when the socket drops is treated as over', async () => {
+    const { session, va } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'r1' });
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'r1',
+      data: Buffer.alloc(400, 0xff).toString('base64'),
+    });
+    va.close(1006, '');
+    await advance(500);
+    // Nothing is left thinking the agent is mid-reply: typed text goes out.
+    session.handleCommand({ t: 'say', text: 'Hello again.' });
+    await advance(300);
+    expect(va.replyCreates.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('CallSession exit paths (Review Focus 1)', () => {
   it('disposes AAI sessions when the leg drops', async () => {
     const { session, leg, va, cap, events } = await setup();
@@ -288,13 +407,18 @@ describe('CallSession exit paths (Review Focus 1)', () => {
     expect(all(events, 'summary')).toHaveLength(1);
   });
 
-  it('the Voice Agent socket dropping ends the whole call', async () => {
-    const { session, leg, va, cap } = await setup();
+  it('the Voice Agent socket dropping ends the whole call when the session cannot be resumed', async () => {
+    const { session, leg, va, cap, events } = await setup();
+    va.resumeOutcomes = ['reject', 'reject'];
     va.close(1006, 'abnormal');
-    await advance(0);
+    await advance(2500);
+    expect(va.resumeCalls).toBe(2);
     expect(cap.closeCalls).toBe(1);
     expect(leg.hangups).toHaveLength(1);
     expect(session.lineState).toBe('ended');
+    expect(all(events, 'alert').find((a) => a.kind === 'call-ended')?.message).toBe(
+      'Call ended: the voice connection dropped.',
+    );
   });
 
   it('hard-stops at MAX_CALL_MS', async () => {

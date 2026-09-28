@@ -2,6 +2,7 @@ import type { VAEvent } from '../../src/aai/voiceAgent.js';
 import type { VoiceAgentLike } from '../../src/call/callSession.js';
 
 export type ConnectBehavior = 'ready' | 'reject' | 'hang';
+export type ResumeOutcome = 'ready' | 'reject' | 'hang';
 
 // Stands in for VoiceAgentSession: records everything the call sends to AAI and lets tests
 // play server events (reply.*, tool.call, input.speech.*, transcript.*) back into it.
@@ -12,6 +13,10 @@ export class FakeVoiceAgent implements VoiceAgentLike {
   readonly replyCreates: string[] = [];
   readonly toolResults: { callId: string; result: unknown; isError: boolean }[] = [];
   endCalls = 0;
+  resumeCalls = 0;
+  // One outcome per resume() call, in order; 'ready' once they run out.
+  resumeOutcomes: ResumeOutcome[] = [];
+  serverEnded = false;
   connectBehavior: ConnectBehavior = 'ready';
   endBehavior: 'resolve' | 'hang' = 'resolve';
   sendAudioThrows = false;
@@ -31,6 +36,28 @@ export class FakeVoiceAgent implements VoiceAgentLike {
 
   get sessionId(): string | undefined {
     return 'sess_fake';
+  }
+
+  get resumable(): boolean {
+    return this.endCalls === 0 && !this.serverEnded;
+  }
+
+  resume(): Promise<void> {
+    this.resumeCalls++;
+    const outcome = this.resumeOutcomes.shift() ?? 'ready';
+    if (outcome === 'reject') {
+      // Like the real session: the refused socket closes (1008) and resume() rejects.
+      const failed = Promise.reject(new Error('session_not_found'));
+      this.onClose(1008, 'session_not_found');
+      return failed;
+    }
+    if (outcome === 'hang') {
+      return new Promise((_resolve, reject) => {
+        this.abortConnect = () => reject(new Error('socket closed while connecting'));
+      });
+    }
+    this.onEvent({ type: 'session.ready', session_id: 'sess_fake' });
+    return Promise.resolve();
   }
 
   connect(): Promise<void> {
