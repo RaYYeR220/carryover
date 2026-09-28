@@ -1,0 +1,86 @@
+/* Sample call: the "Sample call · scripted" banner over the transcript, and
+   the player card (desktop side panel) / icon controls (mobile). */
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--night-1);
+  box-shadow: inset 0 0 0 1px var(--night-line);
+  font-size: 13px;
+  color: var(--on-2);
+}
+
+.notice b {
+  color: var(--on);
+}
+
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--signal);
+}
+
+.player {
+  margin-top: auto;
+  border-radius: 16px;
+  background: var(--night-1);
+  box-shadow: inset 0 0 0 1px var(--night-line);
+  padding: 14px 14px 12px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.head b {
+  font-weight: 700;
+}
+
+.head span {
+  margin-left: auto;
+  color: var(--on-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  height: 4px;
+  margin: 10px 0 12px;
+  border-radius: 4px;
+  background: #232323;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.bar:focus-visible {
+  outline: 2px solid var(--focus, #fff);
+  outline-offset: 2px;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  background: #fff;
+  border-radius: 4px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+.player p {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--on-3);
+}
