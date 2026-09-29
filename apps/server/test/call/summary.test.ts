@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from '@carryover/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { summarize } from '../../src/call/summary.js';
 import { FakeProvider } from '../fakes/fakeProvider.js';
 
@@ -76,5 +76,41 @@ describe('summarize', () => {
     const s = await summarize(provider, [], CTX);
     expect(provider.completeCalls).toHaveLength(0);
     expect(s.outcome).toBe('Call ended');
+  });
+
+  describe('aborts the provider call on timeout', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('passes an AbortSignal down to the provider', async () => {
+      const provider = new FakeProvider('{"outcome":"Done","bullets":[],"commitments":[]}');
+      await summarize(provider, TRANSCRIPT, CTX);
+      expect(provider.completeCalls[0]?.signal).toBeInstanceOf(AbortSignal);
+      expect(provider.completeCalls[0]?.signal?.aborted).toBe(false);
+    });
+
+    it('aborts a provider call that outlives the timeout, and still resolves with the fallback', async () => {
+      vi.useFakeTimers();
+      // Never settles on its own -- only the abort (or a real hung network call, in
+      // production) ever ends it.
+      const provider = new FakeProvider(() => new Promise<string>(() => {}));
+      const done = summarize(provider, TRANSCRIPT, CTX, 1000);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(provider.completeCalls[0]?.signal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const s = await done;
+      expect(provider.completeCalls[0]?.signal?.aborted).toBe(true);
+      expect(s).toEqual({ outcome: 'Call ended', bullets: [], commitments: CTX.commitments });
+    });
+
+    it('clears the timer once the provider answers, so it never fires late', async () => {
+      vi.useFakeTimers();
+      const provider = new FakeProvider('{"outcome":"Done","bullets":[],"commitments":[]}');
+      await summarize(provider, TRANSCRIPT, CTX, 1000);
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });

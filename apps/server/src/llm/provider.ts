@@ -34,7 +34,11 @@ export interface LlmProvider {
     tools?: ToolDef[],
     signal?: AbortSignal,
   ): AsyncIterable<StreamDelta>;
-  complete(messages: ChatMessage[], opts?: { json?: boolean }): Promise<string>;
+  complete(
+    messages: ChatMessage[],
+    opts?: { json?: boolean },
+    signal?: AbortSignal,
+  ): Promise<string>;
 }
 
 const PROVIDER_BASE_URL: Record<Config['llmProvider'], string> = {
@@ -145,14 +149,17 @@ export function createProvider(cfg: Config, baseUrlOverride?: string): LlmProvid
       }
     },
 
-    async complete(messages, opts) {
-      const res = await openai.chat.completions.create({
-        ...extra,
-        model: cfg.llmModel,
-        stream: false,
-        messages: messages as unknown as ChatCompletionMessageParam[],
-        ...(opts?.json ? { response_format: { type: 'json_object' as const } } : {}),
-      });
+    async complete(messages, opts, signal) {
+      const res = await openai.chat.completions.create(
+        {
+          ...extra,
+          model: cfg.llmModel,
+          stream: false,
+          messages: messages as unknown as ChatCompletionMessageParam[],
+          ...(opts?.json ? { response_format: { type: 'json_object' as const } } : {}),
+        },
+        { signal },
+      );
       return res.choices[0]?.message?.content ?? '';
     },
   };

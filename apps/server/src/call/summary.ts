@@ -24,16 +24,27 @@ const MAX_FIELD_CHARS = 300;
 
 // Post-call summary from the transcript, in JSON mode. Never throws: any failure (provider
 // down, bad JSON, missing fields) gives the fallback with the commitments noted live.
+// CallSession also races this against SUMMARY_TIMEOUT_MS externally and moves on if it
+// doesn't resolve in time, but without this AbortController the actual HTTP request would
+// keep running in the background regardless -- this cancels it when `timeoutMs` fires, so
+// nothing is left in flight after the caller has already given up.
 export async function summarize(
   provider: LlmProvider,
   transcript: TranscriptEntry[],
   ctx: SummaryContext,
+  timeoutMs = SUMMARY_TIMEOUT_MS,
 ): Promise<SummaryResult> {
   const noted = (ctx.commitments ?? []).map((c) => ({ ...c }));
   const fallback: SummaryResult = { outcome: FALLBACK_OUTCOME, bullets: [], commitments: noted };
   if (transcript.length === 0) return fallback;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const raw = await provider.complete(buildMessages(transcript, ctx), { json: true });
+    const raw = await provider.complete(
+      buildMessages(transcript, ctx),
+      { json: true },
+      controller.signal,
+    );
     const parsed = parseSummary(raw);
     if (!parsed) return fallback;
     return {
@@ -43,6 +54,8 @@ export async function summarize(
     };
   } catch {
     return fallback;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
