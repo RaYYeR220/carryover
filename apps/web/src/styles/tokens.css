@@ -25,6 +25,9 @@
   --signal: #e3242b;
   --signal-hover: #c91e24;
   --signal-ink: #ff7a7f;
+  /* --signal is only 4.19:1 on --paper -- too low for small text (WCAG AA needs 4.5:1).
+     Use this darker red instead for small red text on paper/white (6.3:1 on --paper). */
+  --signal-paper: #b3141a;
   --you: #ffa6a9; /* said for you, 11:1 */
   --menu-voice: #c7c7c7; /* phone menu recordings, 12:1 */
   --partial: #a8a8a8; /* streaming partial words, 8.8:1 */

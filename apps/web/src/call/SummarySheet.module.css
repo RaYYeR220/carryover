@@ -56,7 +56,7 @@
   font: 900 11px / 1 var(--dot);
   font-variation-settings: "ROND" 100;
   letter-spacing: 0.08em;
-  color: var(--signal);
+  color: var(--signal-paper);
 }
 
 .cal b {

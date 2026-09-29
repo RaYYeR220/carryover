@@ -161,7 +161,7 @@
   display: block;
   margin-top: 2px;
   font-size: 12px;
-  color: var(--signal);
+  color: var(--signal-paper);
 }
 
 .factActs {
@@ -231,7 +231,7 @@
 .error {
   margin-top: var(--s3);
   font-size: 14px;
-  color: var(--signal);
+  color: var(--signal-paper);
 }
 
 .saved {
