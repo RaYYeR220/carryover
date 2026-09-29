@@ -183,6 +183,14 @@ describe('LinePage close codes', () => {
     expect(screen.queryByRole('button', { name: /reconnect/i })).not.toBeInTheDocument();
   });
 
+  it('4409: shows "already in a call" with no reconnect button', () => {
+    const { handlers } = mockSocket();
+    renderLinePage();
+    act(() => handlers().onClose({ code: 4409, wasClean: true }));
+    expect(screen.getByText(/this line is already in a call/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /reconnect/i })).not.toBeInTheDocument();
+  });
+
   it('1000 after ended: no error shown', () => {
     const { handlers } = mockSocket();
     renderLinePage();

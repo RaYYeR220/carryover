@@ -74,6 +74,9 @@ function describeClose(code: number, phaseAtClose: Phase): CloseInfo | null {
       reconnect: false,
     };
   }
+  if (code === 4409) {
+    return { message: 'This line is already in a call.', reconnect: false };
+  }
   return { message: 'Connection lost.', reconnect: true };
 }
 
