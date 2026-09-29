@@ -21,12 +21,12 @@ Open **[/app/new](https://carryover-r8ak.onrender.com/app/new)**, pick a scenari
 Look for:
 - Live captions streaming in from the simulated IVR menu, then DTMF being pressed automatically to reach a person (watch the `dtmf` event / the pressed digit in the transcript).
 - Hold detection, then the **pickup flash + phone buzz** the moment a person answers.
-- The disclosure spoken to that "person" before anything else.
+- The disclosure spoken to that "person" — queued the moment a person is detected, with the language model kept silent while it's pending.
 - An **ask card** the moment the rep asks for something only you can answer (a name, a date of birth) — try Share (if you added a matching fact), Type, or Decline.
 - Type something in the composer and watch it get queued (`relay.queued`) until the line is free, then spoken exactly as typed.
 - The business name in the header reads `"<business> (simulated)"` — it's always labelled.
 
-To see the fabrication gate fire: pick a scenario, don't share the requested fact, and answer any ask card with **Decline**. The agent will not invent a value — it asks again or moves on within the rules in its system prompt.
+To see an ask card fire for a withheld fact: pick a scenario, don't share the requested fact, and wait for the ask card that asks you for it — try Share, Type, or Decline and watch the call proceed accordingly. To see the fabrication gate itself block an invented value, that's a code-level check, not something a demo call can trigger on cue — see it directly: `pnpm --filter @carryover/server exec vitest run test/brain/factGate.test.ts`.
 
 ## 3. Practice line with a second device (2 min)
 
@@ -44,7 +44,7 @@ Open **[/app/new?to=practice](https://carryover-r8ak.onrender.com/app/new?to=pra
 |---|---|
 | The fabrication gate (code, not a prompt) | `apps/server/src/brain/factGate.ts` |
 | What gets said / stays silent / gets proxied through the gate | `apps/server/src/brain/policy.ts` (`decide()`), `apps/server/src/brain/brainRoute.ts` |
-| The system prompt (autonomy rules, disclosure obligation, FACT SHEET) | `apps/server/src/brain/policy.ts` (`systemPrompt()`) |
+| The system prompt (autonomy rules, honest-disclosure-if-asked rule, FACT SHEET) — the proactive disclosure itself is queued by code, not the prompt | `apps/server/src/brain/policy.ts` (`systemPrompt()`); disclosure itself is `apps/server/src/call/callSession.ts` (`disclosureText()`) |
 | Call orchestration (one per call) | `apps/server/src/call/callSession.ts` |
 | Polite turn-taking for typed text | `apps/server/src/call/politeQueue.ts` |
 | What's on the line right now (menu/hold/human/voicemail) | `apps/server/src/call/lineState.ts` |

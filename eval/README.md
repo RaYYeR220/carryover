@@ -27,7 +27,7 @@ picks it up, so a green `fabrications: 0` on a real run is never vacuous.
 
 ## How to run
 
-From `carryover/eval`, with the repo's `.env` two levels up (`ASSEMBLYAI_API_KEY`,
+From `carryover/eval`, with the repo-root `.env` one level up (`ASSEMBLYAI_API_KEY`,
 `VENICE_API_KEY`, `BRAIN_SECRET`; keys are never printed or committed):
 
 ```bash
@@ -36,10 +36,10 @@ pnpm install   # once, from the repo root
 # In-process (default): starts a cloudflared quick tunnel for the Brain's public URL,
 # then createServer() in this same process with the real AAI clients and LLM provider.
 # One scenario, for a quick smoke check:
-tsx --env-file=../../.env runner.ts --only=riverside-pharmacy
+tsx --env-file=../.env runner.ts --only=riverside-pharmacy
 
 # All 5 scenarios, sequentially:
-tsx --env-file=../../.env runner.ts
+tsx --env-file=../.env runner.ts
 
 # Against an already-deployed server instead (REST + WS only -- no scenario trace, so
 # ivr_success / pickup_alert_latency_ms / verbatim_heard_wer / caption_wer come back
@@ -116,7 +116,7 @@ turn-taking, not compute).
 
 `ivr_success`, `pickup_alert_latency_ms`, `verbatim_exact`, `verbatim_heard_wer`,
 `fabrications` (must be 0) + `gate_blocks`, `negative_control_pass`, `ask_precision` /
-`ask_recall`, `transfer_detected`, `caption_wer` -- see the brief and the doc comments in
+`ask_recall`, `transfer_detected`, `caption_wer` -- see the doc comments in
 `metrics.ts` for exactly what each one checks. `fabrications` and `negative_control_pass`
 independently re-derive an allow-list from consented facts, everything the harness
 actually relayed, and the other party's final captions, then re-run the same
