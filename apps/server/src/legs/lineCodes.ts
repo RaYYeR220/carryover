@@ -54,6 +54,13 @@ class PracticeLine implements LineHandle {
       ws.close(4410, 'line expired');
       return;
     }
+    // A call already answered on this line must not be yanked out from under it by a
+    // second tab/reload -- refuse the newcomer and leave the live socket alone. Before the
+    // call connects (waiting/ringing), a reload or a second tab is still a normal takeover.
+    if (this._status === 'connected') {
+      ws.close(4409, 'line busy');
+      return;
+    }
     // A reload or a second tab takes the line over; the old socket is let go quietly.
     const old = this.ws;
     this.ws = ws;

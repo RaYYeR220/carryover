@@ -5,6 +5,10 @@ import { defaultSendDtmf, type PhoneLeg } from './phoneLeg.js';
 export const ANSWER_TIMEOUT_MS = 60_000;
 // Pages send ~20 ms frames; anything past a second of audio in one frame is not a phone.
 export const MAX_FRAME_BYTES = 8000;
+// 'ended' and 'waiting' used to be sent in the same tick, so the page's own "Call ended."
+// screen never had a chance to render before the next status replaced it. Holding 'ended'
+// for a beat lets it actually show.
+export const CALL_ENDED_DISPLAY_MS = 4000;
 
 // The practice line: the other party is a person on the /line/:code page (usually a phone
 // that scanned the QR code). Rings the page, connects when they tap answer, then passes
@@ -101,7 +105,10 @@ export class BrowserLeg implements PhoneLeg {
       this.handle.leg = undefined;
       if (this.handle.status !== 'ended') {
         this.handle.setStatus('ended');
-        this.handle.setStatus('waiting'); // the line is free for the next call
+        // The line is free for the next call, but only once the page has had a moment to
+        // show "Call ended." -- flipping straight to 'waiting' would replace that screen
+        // before it ever painted.
+        setTimeout(() => this.handle.setStatus('waiting'), CALL_ENDED_DISPLAY_MS);
       }
     }
     const p = this.pendingStart;
