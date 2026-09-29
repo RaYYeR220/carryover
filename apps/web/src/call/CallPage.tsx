@@ -1,9 +1,9 @@
 import type { AppCommand, CallTarget, Fact } from '@carryover/protocol';
 import { lazy, Suspense, useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { useLocation, useParams } from 'react-router';
+import { useLocation, useNavigate, useParams } from 'react-router';
 import { api } from '../lib/api';
 import { CallSocket, type CallSocketStatus } from '../lib/callSocket';
-import { history, loadCallToken, vault } from '../lib/store';
+import { history, loadCallToken, saveCallToken, vault } from '../lib/store';
 import { CallScreen } from './CallScreen';
 import { loadCallMeta, targetSubtitle } from './meta';
 import { initialView, reduce } from './state';
@@ -28,8 +28,26 @@ export default function CallPage() {
 
 function LiveCall({ callId }: { callId: string }) {
   const location = useLocation();
-  const [token] = useState(() => loadCallToken(callId));
+  const navigate = useNavigate();
+  // A watch link (the MCP place_call tool's watchUrl) carries the token in the query
+  // string, since sessionStorage was never populated on this device/tab: pick it up once,
+  // save it like a normally-started call would, then strip it from the URL below.
+  const [token] = useState(() => {
+    const fromQuery = new URLSearchParams(location.search).get('token');
+    if (fromQuery) {
+      saveCallToken(callId, fromQuery);
+      return fromQuery;
+    }
+    return loadCallToken(callId);
+  });
   const [meta] = useState(() => loadCallMeta(callId, location.state));
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: strip ?token= once, on mount
+  useEffect(() => {
+    if (new URLSearchParams(location.search).has('token')) {
+      navigate(location.pathname, { replace: true });
+    }
+  }, []);
   const [view, dispatch] = useReducer(reduce, initialView);
   const [status, setStatus] = useState<CallSocketStatus>(token ? 'connecting' : 'unauthorized');
   const [startedAt, setStartedAt] = useState<number>();
