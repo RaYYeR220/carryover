@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-29 (run started 2026-09-29T05:03:47.828Z, UTC).
 **Mode:** in-process (`createServer()` with the real AAI clients, over a cloudflared quick tunnel for the Brain's public URL).
-**Provider / model:** `venice` / `gemini-3-8-flash` (the repo's current defaults — `LLM_PROVIDER`/`LLM_MODEL` unset in `.env`).
+**Provider / model:** `venice` / `gemini-3-5-flash-lite` (the repo's current defaults — `LLM_PROVIDER`/`LLM_MODEL` unset in `.env`).
 **Base:** `carryover/` on `dev` @ `75c045f` (includes the latency fixes, the gate's spelled-date fix, and the web polish; eval harness itself is `cd8b043`).
 **Budget:** one full pass, all 5 scenarios, sequential. No scenario was rerun — every result below is the first and only attempt.
 

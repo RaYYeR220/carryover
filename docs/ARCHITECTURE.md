@@ -16,12 +16,13 @@ apps/server/src/
   api/        Fastify routes, WebSocket handlers, MCP server, rate-limit/body-size guards
 apps/web/src/ React SPA: landing, start-call flow, live call screen, sample player, practice line, history, profile
 packages/protocol/src/  shared zod types: Autonomy, LineState, Fact, AppEvent, AppCommand, StartCallRequest, ...
+eval/       evaluation harness: hidden answer keys, scoring metrics, a scripted user bot, the scorecard runner
 ```
 
 ## Call lifecycle
 
 1. **Start.** `POST /api/calls` (or the MCP `place_call` tool) validates a `StartCallRequest` against the shared protocol schema, resolves the target into a `PhoneLeg` (`BrowserLeg` for a practice-line code, `ScenarioLeg` for a simulated business), applies the per-IP rate limit and the concurrent-call cap, and creates a `CallSession` (`apps/server/src/call/callRegistry.ts`, `apps/server/src/api/routes.ts`).
-2. **`CallSession.start()`** (`apps/server/src/call/callSession.ts`) dials the leg, registers/reuses the stored relay agent for the chosen voice (`AgentRegistry.ensureRelayAgent`), opens a Voice Agent session against that stored agent, and opens an independent Universal-3.5 Pro captions session on the same inbound audio. All three (leg, Voice Agent, captions) must come up; a failure in any of them tears the others down and the call ends.
+2. **`CallSession.start()`** (`apps/server/src/call/callSession.ts`) dials the leg, registers/reuses the stored relay agent for the chosen voice (`AgentRegistry.ensureRelayAgent`), opens a Voice Agent session against that stored agent, and opens an independent Universal-3.5 Pro captions session on the same inbound audio. All three (leg, Voice Agent, captions) must come up; a failure in any of them tears the others down and the call ends. If the Voice Agent socket later drops abnormally mid-call, `resumeVa()` reopens it and sends `session.resume` for the same session id (AssemblyAI keeps a dropped session resumable for 30 s), retrying at 0.5 s and 2 s before giving up and ending the call; the other party hears "Reconnecting voice…" then "Voice reconnected.", inbound audio is dropped (not buffered) while reconnecting, and any typed text sent into the dead socket is resent afterward.
 3. **While connected**, inbound audio from the leg is chunked to 100 ms (`FrameAggregator`) and fanned out to both AssemblyAI sessions. Caption turns update the `LineStateTracker` (menu / hold / human / voicemail) and the `SpeakerMap` (new-speaker detection), and — once final — are added to the fact-gate ledger as `'other'`-sourced evidence.
 4. **The Voice Agent's own turns** call back into the Relay Brain (`POST /brain/v1/chat/completions`), which reads the call's live state through a `BrainCallView` (`CallSession.brainView()`) and returns verbatim text, silence, or a gated LLM stream — see [Brain decision table](#brain-decision-table) below.
 5. **Typed text and ask-card answers** go through `PoliteQueue`, which holds them until the line is free (nobody talking, no reply of ours in flight), then sends `reply.create "RELAY_UTTERANCE:<nonce>"`; the Brain's next request pulls that exact text back out with the nonce and speaks it unmodified — no LLM involved for verbatim text.
@@ -46,6 +47,8 @@ packages/protocol/src/  shared zod types: Autonomy, LineState, Fact, AppEvent, A
 | — | Otherwise | proxy: stream the LLM's reply through the fact gate |
 
 When the decision is **proxy**, `runProxy()` streams the configured LLM (`systemPrompt(view)` + the six `RELAY_TOOLS`) sentence by sentence; each sentence is checked by `checkSentence()` (the fact gate) before being written to the SSE response, and a `press_keys` tool call is held until complete so its digits can be checked the same way. A blocked sentence stops generation, speaks a short filler ("One moment, let me check with &lt;name&gt;."), and raises a `gate.blocked` event with an ask card. The route never returns an HTTP error status to AssemblyAI — every failure mode (bad auth aside) degrades to a clean empty completion, because a POST timeout or a 500 leaves the Voice Agent hanging on live audio.
+
+The system prompt's rule 5 keeps a known fact to one LLM round trip instead of two: a detail that's already in the FACT SHEET is said directly in the reply text, with no tool call; `share_fact` is reserved for a detail that's genuinely missing, so it's the ask-and-wait path, not the default read-back path. The default model (`gemini-3-5-flash-lite` via Venice, thinking disabled — see `DEFAULT_MODEL` in `apps/server/src/config.ts`, overridable with `LLM_MODEL`) was picked from a benchmark across several models for the fastest time-to-first-token that still passed every scored Brain turn (`apps/server/scripts/bench-brain.ts`).
 
 ## Audio path
 

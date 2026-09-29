@@ -4,14 +4,14 @@ Fast path for judges. Live app: **https://carryover-r8ak.onrender.com** (free-ti
 
 ## 1. Watch the sample call (30 s, no setup)
 
-Open **[/app/sample](https://carryover-r8ak.onrender.com/app/sample)** and press Play.
+Open **[/app/sample](https://carryover-r8ak.onrender.com/app/sample)** — it autoplays.
 
 Look for:
 - The "Sample call · scripted" banner — this replay is labelled, not a live call.
 - The disclosure line at the start ("Hi, this is Carryover, an automated relay calling for Maya…").
 - The **pickup flash**: when the script reaches "a person picked up," the whole screen flashes and a banner takes over — this is the same choreography a real pickup triggers.
 - A caption word rendered with a dotted underline — a low-confidence word from Universal-3.5 Pro's per-word confidence score.
-- The **ask card** when the pharmacist asks for a date of birth — Share / Type / Decline.
+- The **ask card** when the pharmacist asks for a date of birth — Share / Type / Decline change how the rest of the script plays out.
 - The summary sheet at the end: outcome, bullets, one commitment, and an "Add to calendar" (.ics) button.
 
 ## 2. Start a real call against a simulated business (2 min)
@@ -48,20 +48,21 @@ Open **[/app/new?to=practice](https://carryover-r8ak.onrender.com/app/new?to=pra
 | Call orchestration (one per call) | `apps/server/src/call/callSession.ts` |
 | Polite turn-taking for typed text | `apps/server/src/call/politeQueue.ts` |
 | What's on the line right now (menu/hold/human/voicemail) | `apps/server/src/call/lineState.ts` |
-| AssemblyAI Voice Agent client | `apps/server/src/aai/voiceAgent.ts`, `apps/server/src/aai/agentRegistry.ts` |
+| AssemblyAI Voice Agent client, incl. session resume after a dropped socket | `apps/server/src/aai/voiceAgent.ts`, `apps/server/src/aai/agentRegistry.ts` |
 | AssemblyAI Universal-3.5 Pro captions client | `apps/server/src/aai/captions.ts` |
 | The simulated-business engine (a second Voice Agent as the "rep") | `apps/server/src/scenarios/engine.ts` |
 | REST + WebSocket + MCP | `apps/server/src/api/{routes,appSocket,lineSocket,mcp}.ts` |
 | The pickup flash / ask card / call screen | `apps/web/src/call/{PickupTakeover,AskCard,CallScreen}.tsx` |
-| The scripted sample player | `apps/web/src/sample/SamplePlayer.tsx`, `apps/web/src/sample/pharmacyScript.ts` |
+| The scripted sample player (autoplay, ask-choice branching) | `apps/web/src/sample/SamplePlayer.tsx`, `apps/web/src/sample/pharmacyScript.ts` |
+| The evaluation harness (hidden answer keys, metrics, scorecard) | `eval/runner.ts`, `eval/metrics.ts`, `eval/SCORECARD.md` |
 
 ## 6. Run the tests
 
 ```bash
 pnpm install
-pnpm test        # protocol 3 + server 420 + web 301 = 724 tests, all green
+pnpm test        # protocol 3 + server 468 + web 318 + eval 40 = 829 tests, all green
 pnpm typecheck
 pnpm lint
 ```
 
-To see the gate in isolation: `pnpm --filter @carryover/server exec vitest run test/brain/factGate.test.ts`.
+To see the gate in isolation: `pnpm --filter @carryover/server exec vitest run test/brain/factGate.test.ts`. To see the evaluation scorecard: `eval/SCORECARD.md`.

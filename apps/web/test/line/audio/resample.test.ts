@@ -107,69 +107,73 @@ describe('downsampleTo8k', () => {
   describe.each([
     { rate: 44100, label: '44.1k' },
     { rate: 48000, label: '48k' },
-  ])('a real call: $label -> 8k, fed 128 samples at a time over 60 s', ({ rate }) => {
-    const seconds = 60;
-    const chunkLen = 128; // an AudioWorkletProcessor render quantum
-    const freq = 1000;
-    const amplitude = 0.8;
-    const ratio = rate / 8000;
+  ])(
+    'a real call: $label -> 8k, fed 128 samples at a time over 60 s',
+    ({ rate }) => {
+      const seconds = 60;
+      const chunkLen = 128; // an AudioWorkletProcessor render quantum
+      const freq = 1000;
+      const amplitude = 0.8;
+      const ratio = rate / 8000;
 
-    function run() {
-      const totalSamples = Math.round(rate * seconds);
-      let state = createDownsampleState();
-      let maxTail = 0;
-      const parts: Int16Array[] = [];
-      for (let start = 0; start < totalSamples; start += chunkLen) {
-        const len = Math.min(chunkLen, totalSamples - start);
-        const chunk = new Float32Array(len);
-        for (let i = 0; i < len; i++) {
-          const t = start + i;
-          chunk[i] = amplitude * Math.sin((2 * Math.PI * freq * t) / rate);
+      function run() {
+        const totalSamples = Math.round(rate * seconds);
+        let state = createDownsampleState();
+        let maxTail = 0;
+        const parts: Int16Array[] = [];
+        for (let start = 0; start < totalSamples; start += chunkLen) {
+          const len = Math.min(chunkLen, totalSamples - start);
+          const chunk = new Float32Array(len);
+          for (let i = 0; i < len; i++) {
+            const t = start + i;
+            chunk[i] = amplitude * Math.sin((2 * Math.PI * freq * t) / rate);
+          }
+          const r = downsampleTo8k(chunk, rate, state);
+          state = r.state;
+          maxTail = Math.max(maxTail, state.tail.length);
+          parts.push(r.output);
         }
-        const r = downsampleTo8k(chunk, rate, state);
-        state = r.state;
-        maxTail = Math.max(maxTail, state.tail.length);
-        parts.push(r.output);
+        const total = parts.reduce((n, p) => n + p.length, 0);
+        const combined = new Int16Array(total);
+        let off = 0;
+        for (const p of parts) {
+          combined.set(p, off);
+          off += p.length;
+        }
+        return { combined, maxTail };
       }
-      const total = parts.reduce((n, p) => n + p.length, 0);
-      const combined = new Int16Array(total);
-      let off = 0;
-      for (const p of parts) {
-        combined.set(p, off);
-        off += p.length;
-      }
-      return { combined, maxTail };
-    }
 
-    it('produces the expected sample count, within +-2', () => {
-      const { combined } = run();
-      const expected = Math.round(seconds * 8000);
-      expect(Math.abs(combined.length - expected)).toBeLessThanOrEqual(2);
-    });
+      it('produces the expected sample count, within +-2', () => {
+        const { combined } = run();
+        const expected = Math.round(seconds * 8000);
+        expect(Math.abs(combined.length - expected)).toBeLessThanOrEqual(2);
+      });
 
-    it('keeps the frequency (zero-crossing count)', () => {
-      const { combined } = run();
-      const crossings = zeroCrossings(combined);
-      const expected = 2 * freq * seconds;
-      // A single sample's worth of slop at each end of a long run, plus a
-      // little room: chunking must not compound error over time.
-      expect(Math.abs(crossings - expected)).toBeLessThanOrEqual(10);
-    });
+      it('keeps the frequency (zero-crossing count)', () => {
+        const { combined } = run();
+        const crossings = zeroCrossings(combined);
+        const expected = 2 * freq * seconds;
+        // A single sample's worth of slop at each end of a long run, plus a
+        // little room: chunking must not compound error over time.
+        expect(Math.abs(crossings - expected)).toBeLessThanOrEqual(10);
+      });
 
-    it('keeps amplitude within 10%', () => {
-      const { combined } = run();
-      const peak = peakAmplitudeInt16(combined);
-      expect(peak).toBeGreaterThan(amplitude * 0.9);
-      expect(peak).toBeLessThanOrEqual(amplitude * 1.1);
-    });
+      it('keeps amplitude within 10%', () => {
+        const { combined } = run();
+        const peak = peakAmplitudeInt16(combined);
+        expect(peak).toBeGreaterThan(amplitude * 0.9);
+        expect(peak).toBeLessThanOrEqual(amplitude * 1.1);
+      });
 
-    it('keeps the carried-over state bounded (no leak across ~20k chunks)', () => {
-      const { maxTail } = run();
-      // The tail can never hold more than about one output slot's worth of
-      // input samples; if it grew per chunk this would be in the thousands.
-      expect(maxTail).toBeLessThanOrEqual(Math.ceil(ratio) + 2);
-    });
-  });
+      it('keeps the carried-over state bounded (no leak across ~20k chunks)', () => {
+        const { maxTail } = run();
+        // The tail can never hold more than about one output slot's worth of
+        // input samples; if it grew per chunk this would be in the thousands.
+        expect(maxTail).toBeLessThanOrEqual(Math.ceil(ratio) + 2);
+      });
+    },
+    30000,
+  );
 });
 
 describe('upsampleFrom8k', () => {

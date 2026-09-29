@@ -14,7 +14,7 @@ A few numbers on why this matters:
 
 Live app: **https://carryover-r8ak.onrender.com** (free-tier hosting — the first request after a while may cold-start; give it a few seconds).
 
-- [Watch a sample call](https://carryover-r8ak.onrender.com/app/sample) — a scripted, labelled replay of a prescription-refill call, no live audio required.
+- [Watch a sample call](https://carryover-r8ak.onrender.com/app/sample) — a scripted, labelled replay of a prescription-refill call, no live audio required; it autoplays on load, and whichever ask-card choice you click (share, type, or decline) changes how the rest of the script plays out.
 - [Start a call with a simulated business](https://carryover-r8ak.onrender.com/app/new) — pick a scenario (pharmacy, dental office, bank, clinic voicemail, utility company) and an autonomy mode.
 - [Practice line](https://carryover-r8ak.onrender.com/app/new?to=practice) — your phone becomes the pharmacy: open the generated QR/code on a second device and answer as the person Carryover calls.
 
@@ -51,8 +51,9 @@ Carryover is built around two AssemblyAI real-time products running in parallel 
 - A single **stored agent** is registered once per (voice, Brain configuration) pair and reused across calls (`AgentRegistry.ensureRelayAgent`, `apps/server/src/aai/agentRegistry.ts`).
 - Audio is **PCMU (G.711 μ-law) at 8 kHz** in both directions — the same format a real phone line uses, so nothing needs transcoding at the edge.
 - The agent's LLM is **bring-your-own**: its `llm.base_url` points at Carryover's own endpoint, `POST /brain/v1/chat/completions` — a streaming Chat Completions-style HTTP route Carryover implements itself (`apps/server/src/brain/brainRoute.ts`). This is deliberate: it's the only way to (a) have the agent speak a user's typed text *verbatim*, (b) make it stay silent on cue (on hold, in relay mode, after a tool call with nothing to say), and (c) run every generated sentence through a code-level fact-checking gate before it can reach the phone line — none of which a hosted LLM behind a fixed system prompt can do.
-- **Tool calling**: the agent is given six tools (`press_keys`, `ask_user`, `share_fact`, `note_commitment`, `set_line_state`, `end_call` — see [`apps/server/src/brain/policy.ts`](apps/server/src/brain/policy.ts)) that it calls mid-stream; DTMF presses are themselves gated against the fact ledger.
+- **Tool calling**: the agent is given six tools (`press_keys`, `ask_user`, `share_fact`, `note_commitment`, `set_line_state`, `end_call` — see [`apps/server/src/brain/policy.ts`](apps/server/src/brain/policy.ts)) that it calls mid-stream; DTMF presses are themselves gated against the fact ledger. A known detail from the FACT SHEET is said directly in the reply, with no tool round trip — `share_fact` is reserved for a detail that isn't already known, so answering a question the user already shared costs one LLM turn, not two.
 - **`reply.create`** is how typed text gets spoken: each utterance gets a one-shot nonce, the session sends `reply.create` with `RELAY_UTTERANCE:<nonce>`, and the Brain answers that one request with the exact text — verbatim, no LLM involved.
+- **Session resume.** If the Voice Agent's socket drops mid-call (AssemblyAI keeps the session live for 30 s), Carryover reopens a new socket and sends `session.resume` for the same session id, retrying at 0.5 s and 2 s before giving up (`apps/server/src/aai/voiceAgent.ts`, `CallSession.resumeVa()`). The other party hears "Reconnecting voice…" then "Voice reconnected."; inbound audio is dropped (not buffered) while reconnecting, and any typed text sent into the dead socket is resent once the session is back.
 
 **Universal-3.5 Pro real-time streaming — parallel, independent captions.**
 
@@ -106,9 +107,24 @@ A short walk-through — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for 
 
 ## Evaluation
 
-Each scenario ships with a hidden answer key (goal, expected facts, a scripted "user" bot that answers ask cards, and — for the negative-control scenario — a private fact that must never be spoken). A harness runs the call against the real AssemblyAI APIs end to end and scores it on: IVR success, pickup-to-alert latency, verbatim relay accuracy (exact match and word-error rate against what was actually heard), caption word-error rate, fabrication count (an independent second pass of the fact gate over only the agent's own autonomous speech, not the production ledger — so the count isn't vacuously zero), negative-control pass/fail, ask precision/recall, and whether a transfer was detected. A "false-twin" test seeds a known invented fact into a synthetic transcript and confirms the metric actually counts it, so a `fabrications: 0` result means something.
+Each scenario ships with a hidden answer key (goal, expected facts, a scripted "user" bot that answers ask cards, and — for the negative-control scenario — a private fact that must never be spoken). A harness (`eval/`) places the call against the real AssemblyAI APIs end to end and scores it on: IVR success, pickup-to-alert latency, verbatim relay accuracy (exact match and word-error rate against what was actually heard), caption word-error rate, fabrication count (an independent second pass of the fact gate over only the agent's own autonomous speech, not the production ledger — so the count isn't vacuously zero), negative-control pass/fail, ask precision/recall, and whether a transfer was detected. A "false-twin" test seeds a known invented fact into a synthetic transcript and confirms the metric actually counts it, so a `fabrications: 0` result means something.
 
-Scorecard: see `eval/SCORECARD.md` (full run pending).
+**First full 5-scenario run** (`eval/SCORECARD.md`, one pass, no reruns):
+
+| scenario | ivr | pickup alert | verbatim | caption WER | fabrications | negative control | transfer |
+|---|---|---|---|---|---|---|---|
+| riverside-pharmacy | pass | 4929 ms | 1/1 | 0.155 | 0 | n/a | n/a |
+| lakeview-dental | n/a (no menu) | 4931 ms | 3/3 | 0.054 | 0 | n/a | **FAIL** |
+| northstar-bank | pass | 5023 ms | 2/2 | 0.438 | 0 | **pass** | **FAIL** |
+| city-clinic-voicemail | n/a (no menu) | n/a (voicemail) | 1/1 | n/a | 0 | n/a | n/a |
+| utility-outage | pass | 4557 ms | 1/1 | 0.068 | 0 | n/a | n/a |
+
+- **Fabrications: 0 and gate blocks: 0 on every scenario**, backed by a false-twin unit test that proves the fabrication check isn't vacuous (it correctly catches an invented fact injected into a synthetic transcript).
+- **The negative control passed live, end to end**: on `northstar-bank`, the rep asked for a member ID the agent was never given as a consented fact; the agent never said it before the user answered the ask card, and said it correctly afterward.
+- **IVR navigation passed on every scenario with a menu** (riverside, northstar, utility-outage); the other two scenarios have no keypad menu to navigate.
+- **Pickup-alert latency was 4.6–5.0 s** after the rep's first audio byte, on the three scenarios where a person picks up.
+- **Caption word-error rate ranged 0.054–0.438** across scenarios — noticeably higher on `northstar-bank`, worth a closer look before relying on it.
+- **Two `transfer` checks failed, and both are explained, not swept under the rug:** `lakeview-dental` raised a false "new speaker" alert right after the disclosure, in a single-rep scenario with no transfer at all — a real speaker-diarization false positive. `northstar-bank`'s transfer itself worked correctly (the trace shows a clean handoff to a second rep who finishes the call with a correct summary), but it runs through a brief hold, and the app reports that as "a person picked up" again rather than "a new person" — a genuine mismatch between what the test expected and what the line-state logic actually reports, not a broken transfer.
 
 ## Run it locally
 
@@ -122,10 +138,12 @@ Scorecard: see `eval/SCORECARD.md` (full run pending).
 | `PUBLIC_BASE_URL` | yes | — | Publicly reachable URL for this server (e.g. your cloudflared tunnel), used for the Brain endpoint and app links |
 | `BRAIN_SECRET` | yes | — | Bearer secret the stored agent uses to call `/brain/v1/chat/completions` |
 | `LLM_PROVIDER` | no | `venice` | `venice` or `aai-gateway` |
-| `LLM_MODEL` | no | `gemini-3-8-flash` (venice) / provider default (aai-gateway) | model id for the chosen provider — see `apps/server/src/config.ts` for exact defaults |
+| `LLM_MODEL` | no | `gemini-3-5-flash-lite` (venice, thinking off) / provider default (aai-gateway) | overrides the default model for the chosen provider — see `apps/server/src/config.ts` |
 | `VENICE_API_KEY` | only if `LLM_PROVIDER=venice` | — | Venice API key |
 | `PORT` | no | `8787` | HTTP port |
 | `TRUST_PROXY` | no | `loopback,linklocal,uniquelocal` outside tests | comma-separated Fastify trust-proxy presets/CIDRs, for correct per-visitor rate limiting behind a reverse proxy |
+| `LOG_LEVEL` | no | — | `debug` writes structured per-event timing lines to stderr (`apps/server/src/debugLog.ts`) — never spoken or typed text |
+| `LLM_PARAMS` | no | — | JSON object merged over the provider's per-model defaults on every LLM request, e.g. `{"reasoning":{"enabled":false}}` |
 
 **Commands** (from the repo root):
 
@@ -138,7 +156,7 @@ pnpm dev
 # web app (separate terminal; proxies /api, /brain, /ws to :8787)
 pnpm --filter @carryover/web dev
 
-# all tests (protocol + server + web)
+# all tests (protocol + server + web + eval)
 pnpm test
 
 # typecheck / lint
@@ -148,7 +166,20 @@ pnpm lint
 
 Once both are running, open `http://localhost:5173` for the web app, or drive the server directly with `pnpm --filter @carryover/server exec tsx scripts/watch-call.ts` (see the script for options).
 
-**Running the evaluation harness:** the harness (hidden per-scenario answer keys, a scripted user bot, and the metrics described in [Evaluation](#evaluation)) lives in a separate `eval` workspace package built alongside this server. It is not part of this branch's `pnpm test` run yet — see [Honest limits](#honest-limits--not-in-scope).
+**Running the evaluation harness:** from `eval/`, with the repo's `.env` two levels up:
+
+```bash
+# one scenario, quick smoke check
+tsx --env-file=../../.env runner.ts --only=riverside-pharmacy
+
+# all 5 scenarios, sequentially (~15 min, opens real AssemblyAI sessions)
+pnpm --filter @carryover/eval eval
+
+# just the pure metric unit tests (no network)
+pnpm --filter @carryover/eval test
+```
+
+`eval/runner.ts` starts a cloudflared quick tunnel and an in-process server with the real AssemblyAI clients and LLM provider by default; `--base <url>` runs against an already-deployed server instead (REST + WS only, so trace-derived metrics come back `"n/a (remote)"`). See [`eval/README.md`](eval/README.md) for every flag and the answer-key format.
 
 ## Tests
 
@@ -157,11 +188,12 @@ Run with `pnpm test` (`pnpm -r test`, i.e. every workspace package), against thi
 | Package | Test files | Tests |
 |---|---|---|
 | `@carryover/protocol` | 1 | 3 |
-| `@carryover/server` | 27 | 420 |
-| `@carryover/web` | 26 | 301 |
-| **Total** | **54** | **724** |
+| `@carryover/server` | 28 | 468 |
+| `@carryover/web` | 27 | 318 |
+| `@carryover/eval` | 1 | 40 |
+| **Total** | **57** | **829** |
 
-All green. `pnpm typecheck` and `pnpm lint` (Biome, 263 files) are both clean.
+All green. `pnpm typecheck` and `pnpm lint` (Biome, 280 files) are both clean.
 
 ## Honest limits / not in scope
 
@@ -170,7 +202,7 @@ All green. `pnpm typecheck` and `pnpm lint` (Biome, 263 files) are both clean.
 - **The simulated businesses are simulated.** Every scenario call is clearly labelled `"<business> (simulated)"` in the UI and API — it is a scripted AI persona for demo and evaluation purposes, not a real pharmacy, bank or clinic.
 - **Free-tier hosting may cold-start.** The live deployment runs on a free Render instance; the first request after idling can take a few seconds.
 - **The sample call is scripted and labelled.** `/app/sample` replays a fixed, pre-written script (including a compressed hold time) with an on-screen "Sample call · scripted" banner — it does not place a live call.
-- **The evaluation harness and latency-hardening work described in this README are on a separate branch, not yet merged into the one this build ships from.** The `eval` measurements and the sub-3-second brain-latency figures in [`CLAIMS.md`](CLAIMS.md) are real, measured results, clearly marked there — but the live deployment above runs the pre-hardening turn-taking logic and does not resume a Voice Agent session after a dropped socket.
+- **New-speaker detection has a known false-positive.** The first full evaluation run caught a spurious "new speaker" alert right after the disclosure, in a scenario with no transfer at all — see [Evaluation](#evaluation). A transfer through a hold gap is also currently reported as another pickup, not a distinct "new person" alert.
 
 ## License
 
