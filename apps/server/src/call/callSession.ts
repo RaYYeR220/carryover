@@ -783,7 +783,7 @@ export class CallSession {
     this.vaReconnecting = true;
     if (this.replyInFlight !== undefined) this.recoverStalledReply(this.now());
     this.awaitingReplyUntil = 0;
-    this.emit({ t: 'error', message: VA_RECONNECTING_MESSAGE });
+    this.emit({ t: 'alert', kind: 'voice', message: VA_RECONNECTING_MESSAGE, at: this.now() });
     for (const delay of VA_RESUME_DELAYS_MS) {
       await this.wait(delay);
       if (this.ending) return;
@@ -799,7 +799,7 @@ export class CallSession {
       if (this.ending) return;
       this.vaReconnecting = false;
       this.debug('va.resumed', { ms: this.now() - startedAt });
-      this.emit({ t: 'error', message: VA_RECONNECTED_MESSAGE });
+      this.emit({ t: 'alert', kind: 'voice', message: VA_RECONNECTED_MESSAGE, at: this.now() });
       // Typed text sent into the dead socket was never spoken: say it now.
       this.queue.requeueUnspoken();
       this.queue.tick(this.now());

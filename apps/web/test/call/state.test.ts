@@ -257,6 +257,17 @@ describe('reduce', () => {
     expect(rows(v)[3]?.sub).toBe('Thursday after 2 pm');
   });
 
+  it('a voice alert only updates lastAlert -- no timeline row, and never marks the call ended', () => {
+    const v = run([{ t: 'alert', kind: 'voice', message: 'Reconnecting voice…', at: T0 + 2000 }]);
+    expect(v.lastAlert).toEqual({
+      kind: 'voice',
+      message: 'Reconnecting voice…',
+      at: T0 + 2000,
+    });
+    expect(v.timeline).toEqual([]);
+    expect(v.ended).toBe(false);
+  });
+
   it('closes the hold row when the line leaves hold', () => {
     const state = (lineState: 'hold' | 'human', since: number): AppEvent => ({
       t: 'call.state',

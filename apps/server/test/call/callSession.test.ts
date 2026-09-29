@@ -263,7 +263,10 @@ describe('CallSession start', () => {
 
 describe('CallSession voice agent resume', () => {
   const frame = () => Buffer.alloc(800, 0xff);
-  const errors = (events: AppEvent[]) => all(events, 'error').map((e) => e.message);
+  const voiceAlerts = (events: AppEvent[]) =>
+    all(events, 'alert')
+      .filter((e) => e.kind === 'voice')
+      .map((e) => e.message);
 
   it('resumes the session after an abnormal close (1006) and the call carries on', async () => {
     const { session, leg, va, cap, events } = await setup();
@@ -272,7 +275,7 @@ describe('CallSession voice agent resume', () => {
     expect(va.audio).toHaveLength(1);
 
     va.close(1006, '');
-    expect(errors(events)).toEqual(['Reconnecting voice…']);
+    expect(voiceAlerts(events)).toEqual(['Reconnecting voice…']);
     // While reconnecting the other party's audio is dropped, not buffered, for the Voice
     // Agent; the captions keep getting it.
     leg.emitAudio(frame());
@@ -284,7 +287,7 @@ describe('CallSession voice agent resume', () => {
     expect(va.resumeCalls).toBe(0);
     await advance(1);
     expect(va.resumeCalls).toBe(1);
-    expect(errors(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
+    expect(voiceAlerts(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
     // The resumed session is tagged again (session.ready → call tag) and hears the line.
     expect(va.updates).toEqual([tagged, tagged]);
     leg.emitAudio(frame());
@@ -296,6 +299,14 @@ describe('CallSession voice agent resume', () => {
     expect(alertKinds(events)).not.toContain('call-ended');
   });
 
+  it('emits reconnect notices as a neutral voice alert, never as t:"error"', async () => {
+    const { va, events } = await setup();
+    va.close(1006, '');
+    await advance(500);
+    expect(all(events, 'error')).toEqual([]);
+    expect(alertKinds(events).filter((k) => k === 'voice')).toEqual(['voice', 'voice']);
+  });
+
   it('retries once after 2 s when the first resume fails, then carries on', async () => {
     const { session, va, events } = await setup();
     va.resumeOutcomes = ['reject', 'ready'];
@@ -303,12 +314,12 @@ describe('CallSession voice agent resume', () => {
     await advance(500);
     expect(va.resumeCalls).toBe(1);
     // The refused socket closing is that attempt's failure, not a new drop.
-    expect(errors(events)).toEqual(['Reconnecting voice…']);
+    expect(voiceAlerts(events)).toEqual(['Reconnecting voice…']);
     await advance(1999);
     expect(va.resumeCalls).toBe(1);
     await advance(1);
     expect(va.resumeCalls).toBe(2);
-    expect(errors(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
+    expect(voiceAlerts(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
     expect(session.lineState).not.toBe('ended');
   });
 

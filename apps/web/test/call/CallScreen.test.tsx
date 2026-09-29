@@ -330,6 +330,18 @@ describe('CallScreen: pickup', () => {
   });
 });
 
+describe('CallScreen: voice reconnect alert', () => {
+  it('shows the reconnect notice as a plain toast, never the pickup flash/frame', () => {
+    const view = live([
+      { t: 'alert', kind: 'voice', message: 'Reconnecting voice…', at: T0 + 32_000 },
+    ]);
+    setup({ view });
+    expect(screen.getByText('Reconnecting voice…')).toBeInTheDocument();
+    expect(screen.queryByTestId('pickup-flash')).toBeNull();
+    expect(screen.queryByTestId('pickup-frame')).toBeNull();
+  });
+});
+
 describe('CallScreen: ended and unauthorized', () => {
   it('renders the ended panel with links when the token is refused', () => {
     setup({ view: initialView, status: 'unauthorized' });

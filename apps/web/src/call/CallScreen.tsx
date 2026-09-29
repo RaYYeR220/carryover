@@ -234,6 +234,12 @@ export function CallScreen({
     setSentFor(undefined);
   }, [view.error, showToast]);
 
+  /* ---------- voice reconnect notices: a neutral banner, not an error ---------- */
+  useEffect(() => {
+    if (view.lastAlert?.kind !== 'voice') return;
+    showToast(view.lastAlert.message);
+  }, [view.lastAlert, showToast]);
+
   const holdingLine = (() => {
     if (!ask) return undefined;
     for (let i = view.timeline.length - 1; i >= 0; i--) {

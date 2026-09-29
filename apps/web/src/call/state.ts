@@ -324,6 +324,10 @@ function onAlert(v: CallView, e: Extract<AppEvent, { t: 'alert' }>): CallView {
         at: e.at,
       });
     }
+    case 'voice':
+      // "Reconnecting voice…" / "Voice reconnected.": a neutral banner only (via
+      // view.lastAlert, already updated above), never a timeline row or the pickup flash.
+      return next;
     default:
       return next;
   }

@@ -100,7 +100,13 @@ export interface CallSummary {
   transcript: TranscriptEntry[];
 }
 
-export type AlertKind = 'human-picked-up' | 'new-speaker' | 'voicemail' | 'call-ended' | 'ask';
+export type AlertKind =
+  | 'human-picked-up'
+  | 'new-speaker'
+  | 'voicemail'
+  | 'call-ended'
+  | 'ask'
+  | 'voice';
 
 export type AppEvent =
   | {
