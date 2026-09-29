@@ -3,7 +3,7 @@
 // whether the turn was handled correctly.
 //
 // Usage (from apps/server, VENICE_API_KEY in the env):
-//   tsx --env-file=../../../.env scripts/bench-brain.ts [--reps 3] [--only llama-3.3-70b]
+//   tsx --env-file=../../.env scripts/bench-brain.ts [--reps 3] [--only llama-3.3-70b]
 //
 // Candidates are model + extra request params (see llmParams() in src/llm/provider.ts);
 // --params '<json>' overrides the params of every candidate, --only picks by label,

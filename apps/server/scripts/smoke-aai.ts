@@ -3,15 +3,12 @@
 // src/aai or src/llm to confirm the wire shapes still match production.
 //
 // Usage (from apps/server, with the real keys loaded):
-//   tsx --env-file=../../../.env scripts/smoke-aai.ts
+//   tsx --env-file=../../.env scripts/smoke-aai.ts
 //
 // PUBLIC_BASE_URL can be any public https URL: the Voice Agent session here
 // only ever sends silence, so the stored agent's Brain endpoint is configured
 // but never actually called. BRAIN_SECRET can be any placeholder for the
 // same reason. Both default below when unset so the script runs standalone.
-import { readdirSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { AgentRegistry } from '../src/aai/agentRegistry.js';
 import { CaptionsStream } from '../src/aai/captions.js';
 import { type VAEvent, VoiceAgentSession } from '../src/aai/voiceAgent.js';
@@ -19,7 +16,6 @@ import { dtmfMulaw } from '../src/audio/dtmf.js';
 import { CHUNK_BYTES } from '../src/audio/pacer.js';
 import { loadConfig } from '../src/config.js';
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SILENCE_BYTE = 0xff; // mu-law "zero" sample
 const CHUNK_MS = 100;
 
@@ -42,27 +38,9 @@ async function sendPaced(buf: Buffer, send: (chunk: Buffer) => void): Promise<vo
   }
 }
 
-// Prefer real recorded audio from the day-0 spike (spikes/audio/*.ulaw8) when
-// this checkout has it next to the public repo; fall back to a synthesized
-// DTMF + silence clip so the script also runs on a checkout that only has
-// the public repo.
+// A synthesized DTMF + silence clip: enough to exercise the captions wire shape without
+// depending on any recorded audio file being present in the checkout.
 function loadCaptionAudio(): Buffer {
-  const spikeAudioDir = path.resolve(SCRIPT_DIR, '../../../../spikes/audio');
-  try {
-    const files = readdirSync(spikeAudioDir)
-      .filter((f) => f.endsWith('.ulaw8'))
-      .sort()
-      .slice(0, 3);
-    if (files.length > 0) {
-      console.log(`[captions] using spike audio: ${files.join(', ')}`);
-      const gap = Buffer.alloc(CHUNK_BYTES * 5, SILENCE_BYTE);
-      const parts = files.flatMap((f) => [readFileSync(path.join(spikeAudioDir, f)), gap]);
-      return Buffer.concat(parts);
-    }
-  } catch {
-    // spikes/ isn't part of this checkout -- fall through to the synthesized clip.
-  }
-  console.log('[captions] spike audio not found, using a synthesized DTMF + silence clip');
   const lead = Buffer.alloc(CHUNK_BYTES * 5, SILENCE_BYTE);
   const tones = dtmfMulaw('1234', { toneMs: 200, gapMs: 100 });
   const trail = Buffer.alloc(CHUNK_BYTES * 5, SILENCE_BYTE);

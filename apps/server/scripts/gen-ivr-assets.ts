@@ -4,7 +4,7 @@
 // (voice "vera", output audio/pcmu); the greeting audio is captured until reply.done.
 //
 // Usage (from apps/server, with the real key loaded):
-//   tsx --env-file=../../../.env scripts/gen-ivr-assets.ts [--force] [--only=<asset>]
+//   tsx --env-file=../../.env scripts/gen-ivr-assets.ts [--force] [--only=<asset>]
 //
 // Existing files are kept unless --force is given, so re-running only fills in new
 // prompts. Also writes beep.ulaw (1 kHz, 400 ms).
