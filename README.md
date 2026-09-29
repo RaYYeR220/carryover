@@ -18,7 +18,7 @@ Live app: **https://carryover-r8ak.onrender.com** (free-tier hosting — the fir
 - [Start a call with a simulated business](https://carryover-r8ak.onrender.com/app/new) — pick a scenario (pharmacy, dental office, bank, clinic voicemail, utility company) and an autonomy mode.
 - [Practice line](https://carryover-r8ak.onrender.com/app/new?to=practice) — your phone becomes the pharmacy: open the generated QR/code on a second device and answer as the person Carryover calls.
 
-Video: coming soon
+**Demo video (3 min):** https://youtu.be/wLuvOUeYgio
 
 ## What it does
 
