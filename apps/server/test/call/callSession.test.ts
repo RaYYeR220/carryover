@@ -341,6 +341,26 @@ describe('CallSession voice agent resume', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('hanging up inside the 500 ms backoff settles the resume wait at once and leaves no timers', async () => {
+    const { session, va } = await setup();
+    const spied = vi.spyOn(session as unknown as { resumeVa: () => Promise<void> }, 'resumeVa');
+    va.close(1006, '');
+    expect(spied).toHaveBeenCalledTimes(1);
+    let returned = false;
+    const attempt = spied.mock.results[0]?.value as Promise<void> | undefined;
+    expect(attempt).toBeInstanceOf(Promise);
+    void attempt?.then(() => {
+      returned = true;
+    });
+    await advance(200); // inside the first 500 ms backoff
+    session.handleCommand({ t: 'hangup' });
+    await advance(0);
+    expect(returned).toBe(true);
+    await session.finished;
+    expect(va.resumeCalls).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('typed text waits during the reconnect, and text lost with the old socket is re-sent', async () => {
     const { session, va } = await setup();
     session.handleCommand({ t: 'say', text: 'Lost with the socket.' });
@@ -1237,13 +1257,48 @@ describe('CallSession tools', () => {
     expect(leg.hangups).toEqual(['agent-ended']);
   });
 
-  it('end_call in an interrupted reply is cancelled', async () => {
-    const { session, va } = await setup();
+  it('end_call in an interrupted reply still ends the call, after a 1.5 s grace', async () => {
+    const { session, va, leg } = await setup();
     va.emit({ type: 'reply.started', reply_id: 'r1' });
     va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
     va.emit({ type: 'reply.done', reply_id: 'r1', status: 'interrupted' });
-    await advance(3000);
+    await advance(1300);
     expect(session.lineState).not.toBe('ended');
+    await advance(300);
+    expect(session.lineState).toBe('ended');
+    expect(leg.hangups).toEqual(['agent-ended']);
+  });
+
+  it('a goodbye talked over by "okay, bye!" still hangs up within ~2 s (Brain goodbye + end_call)', async () => {
+    // The Brain says "Thank you, goodbye." before end_call; the other party answers over
+    // it, AAI reports the reply interrupted. Before: end_call was dropped and the call sat
+    // open until the 5-minute limit.
+    const { session, va, leg, events } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'bye' });
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'bye',
+      data: Buffer.alloc(8000, 0x55).toString('base64'),
+    });
+    va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
+    await advance(400); // part of the goodbye plays
+    va.emit({ type: 'input.speech.started' });
+    va.emit({ type: 'transcript.agent', reply_id: 'bye', text: 'Thank you,', interrupted: true });
+    va.emit({ type: 'reply.done', reply_id: 'bye', status: 'interrupted' });
+    const cutAt = Date.now();
+    let endedAfter: number | undefined;
+    for (let t = 0; t < 5000 && endedAfter === undefined; t += 100) {
+      await advance(100);
+      if (session.lineState === 'ended') endedAfter = Date.now() - cutAt;
+    }
+    expect(endedAfter).toBeDefined();
+    expect(endedAfter as number).toBeLessThanOrEqual(2000);
+    expect(leg.hangups).toEqual(['agent-ended']);
+    expect(all(events, 'alert').find((a) => a.kind === 'call-ended')?.message).toBe(
+      'Call ended: the conversation is finished.',
+    );
+    // The interrupted reply's tool result is never sent (AAI docs), the hang-up still is.
+    expect(va.toolResults).toEqual([]);
   });
 
   it('ask cards expire after 90 s', async () => {

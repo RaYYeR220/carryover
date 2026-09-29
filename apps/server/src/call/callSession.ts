@@ -100,6 +100,9 @@ const REPLY_STALL_MS = 20_000; // a reply silent for this long is treated as ove
 // their last speech event, in case reply.done never comes.
 const TURN_SETTLE_MAX_MS = 3000;
 const END_DRAIN_MAX_MS = 15_000; // end_call: longest wait for the goodbye to play out
+// end_call in a reply the other party talked over ("okay, bye!"): the hang-up was decided
+// and part of the goodbye was heard, so the call still ends, this long after the cut.
+const END_AFTER_INTERRUPT_MS = 1500;
 const DISCLOSURE_REARM_MS = 10_000; // human → voicemail this fast: the "person" was a recording
 const REPEAT_PRESS_MS = 5000; // the same press_keys again this soon is a re-press, skipped
 // A Voice Agent socket that drops mid-call is resumed (AAI keeps the session 30 s): one
@@ -192,6 +195,8 @@ export class CallSession {
   private readonly nonceKinds = new Map<string, RelayKind>();
   private readonly spokenRelays: { text: string; kind: RelayKind }[] = [];
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  // Pending wait() calls; the call ending settles them at once.
+  private readonly waits = new Set<() => void>();
   private readonly interruptedReplies = new Set<string>();
   private readonly relayTimings = new Map<string, RelayTiming>();
   private readonly repliesWithAudio = new Set<string>();
@@ -240,7 +245,7 @@ export class CallSession {
   private lastVaEvent: 'reply.started' | 'reply.done' | 'input.speech.started' = 'reply.done';
   private pendingTools: PendingToolResult[] = [];
   private pendingDtmf: { digits: string; replyId: string }[] = [];
-  private endAfterReply: { replyId?: string; readyAt?: number } | undefined;
+  private endAfterReply: { replyId?: string; readyAt?: number; notBefore?: number } | undefined;
   private toolLoopDepth = 0;
   private lastPress: { digits: string; at: number } | undefined;
   private lastThemPerson: number | undefined;
@@ -393,6 +398,8 @@ export class CallSession {
     const endedAt = this.now();
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
+    // Anything awaiting a wait() (the resume backoff) resumes now and sees the call ending.
+    for (const done of [...this.waits]) done();
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = undefined;
     this.out?.stop();
@@ -754,7 +761,7 @@ export class CallSession {
     this.awaitingReplyUntil = 0;
     this.emit({ t: 'error', message: VA_RECONNECTING_MESSAGE });
     for (const delay of VA_RESUME_DELAYS_MS) {
-      await new Promise<void>((resolve) => this.armTimer(resolve, delay));
+      await this.wait(delay);
       if (this.ending) return;
       const startedAt = this.now();
       try {
@@ -821,7 +828,10 @@ export class CallSession {
       // Only this reply's unplayed speech: queued tones and other audio keep going.
       this.out?.dropReply(id);
       this.pendingTools = this.pendingTools.filter((t) => t.replyId !== id);
-      if (this.endAfterReply?.replyId === id) this.endAfterReply = undefined;
+      // The hang-up stands: without it the call would sit open until the time limit.
+      if (this.endAfterReply && this.endAfterReply.replyId === id) {
+        this.endAfterReply = { readyAt: now, notBefore: now + END_AFTER_INTERRUPT_MS };
+      }
     } else {
       this.out?.padToChunk(id);
       if (this.endAfterReply && this.endAfterReply.replyId === id) this.endAfterReply.readyAt = now;
@@ -1227,8 +1237,13 @@ export class CallSession {
     }
     this.debugQueueBlocker(now);
     this.queue.tick(now);
-    const readyAt = this.endAfterReply?.readyAt;
-    if (readyAt !== undefined && (!this.outBusy() || now - readyAt > END_DRAIN_MAX_MS)) {
+    const ending = this.endAfterReply;
+    const readyAt = ending?.readyAt;
+    if (
+      readyAt !== undefined &&
+      now >= (ending?.notBefore ?? readyAt) &&
+      (!this.outBusy() || now - readyAt > END_DRAIN_MAX_MS)
+    ) {
       void this.end('agent-ended');
     }
   }
@@ -1440,6 +1455,20 @@ export class CallSession {
       if (w.length >= MIN_GOAL_WORD) add(w);
     }
     return out.slice(0, MAX_KEYTERMS);
+  }
+
+  // Resolves after `ms`, or as soon as the call ends (then `ending` is true): an async
+  // path awaiting it never hangs on a timer that finish() cleared.
+  private wait(ms: number): Promise<void> {
+    if (this.ending) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        this.waits.delete(done);
+        resolve();
+      };
+      this.waits.add(done);
+      this.armTimer(done, ms);
+    });
   }
 
   private armTimer(fn: () => void, ms: number): ReturnType<typeof setTimeout> {

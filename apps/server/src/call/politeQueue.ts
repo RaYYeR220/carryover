@@ -44,6 +44,12 @@ const HARD_MAX_WAIT_MS = 60_000;
 // Longest a settling Voice Agent holds up the head of the queue: urgent text this long
 // after it reached the front, other text this long past the force-send.
 const URGENT_SETTLE_MAX_MS = 3000;
+// This widens the non-urgent bound from 8 s (the force-send) to 12 s on a line where the
+// Voice Agent is mid-turn the whole time (its VAD hears them, or its reply to their last
+// turn is still open). Text sent into that is merged into AAI's turn reply and cut off
+// when AAI commits the turn (seen three times live), so forcing it at 8 s would mostly
+// get it cut; 4 s more covers AAI's ~1.5 s VAD lag plus its ~1.3 s commit with margin.
+// Urgent text ("speak now", ask answers) is capped at 3 s instead.
 const SETTLE_OVERRIDE_MS = 4000;
 
 interface Item {
@@ -118,6 +124,9 @@ export class PoliteQueue {
 
   // "Speak now" for text that is already waiting (the app re-sends it with urgent=true):
   // the waiting utterances are promoted instead of queueing the same words twice.
+  // Limitation: every part must still be waiting. A long text split into several parts
+  // whose first parts were already sent is not matched, so it is queued again in full
+  // and the parts already said are repeated. Matching is on the collapsed text only.
   private promoteQueued(parts: string[]): string[] | undefined {
     const matched: Item[] = [];
     for (const part of parts) {
