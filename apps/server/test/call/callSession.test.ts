@@ -1301,6 +1301,31 @@ describe('CallSession tools', () => {
     expect(va.toolResults).toEqual([]);
   });
 
+  it('a second end_call in a later reply never pushes back the armed hang-up (still ended by 2 s)', async () => {
+    const { session, va, leg } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'bye' });
+    va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
+    va.emit({ type: 'reply.done', reply_id: 'bye', status: 'interrupted' }); // grace armed
+    await advance(200);
+    // The other party's "okay, bye!" starts a new reply, and the model ends the call again.
+    va.emit({ type: 'reply.started', reply_id: 'again' });
+    va.emit({ type: 'tool.call', call_id: 'e2', name: 'end_call', arguments: { reason: 'bye' } });
+    await advance(1800);
+    expect(session.lineState).toBe('ended');
+    expect(leg.hangups).toEqual(['agent-ended']);
+  });
+
+  it('a stray end_call after the hang-up was armed keeps the armed deadline', async () => {
+    const { session, va } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'slow' });
+    va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
+    va.emit({ type: 'reply.done', reply_id: 'slow', status: 'completed' });
+    // Already armed by reply.done; a stray end_call outside any reply keeps that deadline.
+    va.emit({ type: 'tool.call', call_id: 'e2', name: 'end_call', arguments: { reason: 'done' } });
+    await advance(200);
+    expect(session.lineState).toBe('ended');
+  });
+
   it('ask cards expire after 90 s', async () => {
     const { session, va, events } = await setup();
     va.emit({ type: 'tool.call', call_id: 'a1', name: 'ask_user', arguments: { question: 'Q?' } });

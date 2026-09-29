@@ -173,8 +173,9 @@ export type BrainDecision =
   | { kind: 'silence'; why: string }
   | { kind: 'proxy' };
 
-// After a key press there is nothing to say: the tones are the reply.
-const SILENT_AFTER_TOOLS = new Set(['press_keys']);
+// After a key press there is nothing to say: the tones are the reply. After end_call the
+// call is over: asking the LLM again only invites a second goodbye or a second end_call.
+const SILENT_AFTER_TOOLS = new Set(['press_keys', 'end_call']);
 // A note or a line-state fix is bookkeeping, not an answer: if nothing was said since the
 // other party's last turn, the LLM still owes them one (a question like "Anything else?"
 // must not be met with silence).

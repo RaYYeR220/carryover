@@ -918,10 +918,17 @@ export class CallSession {
         this.line.force(state);
         return ok({ status: 'ok', state });
       }
-      case 'end_call':
-        // After the goodbye in this reply has played out (see tick()).
-        this.endAfterReply = replyId !== undefined ? { replyId } : { readyAt: now };
+      case 'end_call': {
+        // After the goodbye in this reply has played out (see tick()). A repeated end_call
+        // never pushes an end already on its way back: the earliest deadline wins (an
+        // armed one -- e.g. the grace after an interrupted goodbye -- over a new reply's).
+        const next = replyId !== undefined ? { replyId } : { readyAt: now };
+        const cur = this.endAfterReply;
+        if (!cur || (cur.readyAt === undefined && next.readyAt !== undefined)) {
+          this.endAfterReply = next;
+        }
         return ok({ status: 'ending' });
+      }
       default:
         return fail(`unknown tool ${name}`);
     }

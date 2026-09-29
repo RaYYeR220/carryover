@@ -54,9 +54,11 @@ describe('decide', () => {
       kind: 'silence',
       why: 'user-typing-queued',
     });
-    expect(
-      decide({ ...userTurn, lastRole: 'tool', lastToolName: 'press_keys' }, fakeView(base)),
-    ).toEqual({ kind: 'silence', why: 'post-tool' });
+    for (const tool of ['press_keys', 'end_call']) {
+      expect(decide({ ...userTurn, lastRole: 'tool', lastToolName: tool }, fakeView(base))).toEqual(
+        { kind: 'silence', why: 'post-tool' },
+      );
+    }
     // A note or a line-state fix is not an answer: silent only when something was already
     // said after the other party's turn (live: note_commitment alone left "Anything
     // else?" unanswered and the call hung).

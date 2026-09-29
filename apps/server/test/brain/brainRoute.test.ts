@@ -253,6 +253,17 @@ describe('brain route: routing, auth and silence (Review Focus 2)', () => {
     expectEmptyCompletion(res, sse);
     expect(provider.calls).toHaveLength(0);
   });
+
+  it('after end_call (real AAI post-tool body shape) → silence, the LLM is not asked again', async () => {
+    // Asking again after end_call invited a second end_call that reset the hang-up.
+    const b = fixture('byo-tool-result') as { messages: { tool_calls?: unknown[] }[] };
+    const withEnd = JSON.parse(JSON.stringify(b).replaceAll('ask_user', 'end_call'));
+    const provider = new FakeProvider(never);
+    const { app: a } = makeApp(provider, [fakeView({ callId: CALL_A })]);
+    const { res, sse } = await post(a, withEnd);
+    expectEmptyCompletion(res, sse);
+    expect(provider.calls).toHaveLength(0);
+  });
 });
 
 describe('brain route: after bookkeeping tools', () => {
