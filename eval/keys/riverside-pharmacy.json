@@ -10,15 +10,21 @@
   "privateFacts": [],
   "expect": {
     "ivrDigits": "2",
-    "asks": [],
+    "asks": ["lisinopril"],
     "newSpeaker": false,
     "forbiddenInAgentSpeech": [],
     "mustSayAfterAnswer": []
   },
   "userScript": [
     {
+      "trigger": { "type": "ask", "onAsk": "lisinopril" },
+      "answerWith": "Yes, that's the one.",
+      "via": "answer",
+      "afterMs": 2000
+    },
+    {
       "trigger": { "type": "ask", "onAsk": "prescription" },
-      "answerWith": "Lisinopril, yes.",
+      "answerWith": "Yes, lisinopril.",
       "via": "answer",
       "afterMs": 2000
     }

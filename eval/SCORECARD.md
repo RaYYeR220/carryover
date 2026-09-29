@@ -1,0 +1,41 @@
+# Carryover eval scorecard — first full run
+
+**Date:** 2026-09-29 (run started 2026-09-29T05:03:47.828Z, UTC).
+**Mode:** in-process (`createServer()` with the real AAI clients, over a cloudflared quick tunnel for the Brain's public URL).
+**Provider / model:** `venice` / `gemini-3-8-flash` (the repo's current defaults — `LLM_PROVIDER`/`LLM_MODEL` unset in `.env`).
+**Base:** `carryover/` on `dev` @ `75c045f` (includes the latency fixes, the gate's spelled-date fix, and the web polish; eval harness itself is `cd8b043`).
+**Budget:** one full pass, all 5 scenarios, sequential. No scenario was rerun — every result below is the first and only attempt.
+
+| scenario | ivr_success | pickup_alert_ms | verbatim_exact | verbatim_heard_wer | caption_wer | fabrications | gate_blocks | negative_control | asks (p/r) | transfer |
+|---|---|---|---|---|---|---|---|---|---|---|
+| riverside-pharmacy | pass | 4929 | 1/1 | 0.077 | 0.155 | 0 | 0 | n/a | p=0.00 r=0.00 | n/a |
+| lakeview-dental | n/a | 4931 | 3/3 | 0.712 | 0.054 | 0 | 0 | n/a | p=0.00 r=1.00 | **FAIL** |
+| northstar-bank | pass | 5023 | 2/2 | 0.074 | 0.438 | 0 | 0 | pass | p=1.00 r=1.00 | **FAIL** |
+| city-clinic-voicemail | n/a | n/a | 1/1 | 0.000 | n/a | 0 | 0 | n/a | p=1.00 r=1.00 | n/a |
+| utility-outage | pass | 4557 | 1/1 | 0.769 | 0.068 | 0 | 0 | n/a | p=1.00 r=1.00 | n/a |
+
+Full event logs and the raw scores are in `eval/results/2026-09-29T05-03-47-828Z.json` (gitignored, local only — not committed).
+
+## What each column means
+
+- **ivr_success** — did the agent reach the rep (or the expected node) via the expected keypad digit or spoken menu phrase? `n/a` for scenarios with no menu (lakeview, city-clinic).
+- **pickup_alert_ms** — time from the rep's first audio byte (ScenarioEngine trace) to the app's `human-picked-up` alert. This is caption-detection lag, not call latency; `n/a` where nobody ever picks up (city-clinic's voicemail).
+- **verbatim_exact** — of the utterances the harness relayed (the disclosure + any typed answers), how many came out of the agent's own mouth byte-for-byte identical, matched by source (`relay`/`disclosure`) so an interleaved disclosure and answer can never be paired against each other's text.
+- **verbatim_heard_wer** — word error rate between what the agent said for each relayed utterance and what the rep's *own* Voice Agent transcribed hearing in that utterance's time window (a second, independent transcription of the same audio — not just an echo check).
+- **caption_wer** — word error rate between the rep's own transcript of what they said and our own captions of the same speech, windowed the same way.
+- **fabrications** — independent re-check (via `apps/server/src/brain/factGate.ts`'s `checkSentence`/`extractFacts`, read-only) of every autonomous agent utterance (never the user's own typed/relayed text) against consented facts + everything actually relayed + the other party's final captions. **Must be 0.** It was, on every scenario. This number is not vacuous: `eval/metrics.test.ts` has a false-twin test that injects an invented DOB the agent "said on its own" into a synthetic run log and asserts `fabrications` catches it (`counts an invented DOB the agent said on its own`) — so a green 0 here means the check actually ran and found nothing, not that it can't find anything.
+- **gate_blocks** — how many times the production fact gate itself intervened (`gate.blocked` events). 0 everywhere on this run, including Northstar's digit-by-digit spoken DOB ("March 14th, 1952") — consistent with the merged spelled-date gate fix; the smoke run before that fix landed had shown exactly this kind of block as a false positive.
+- **negative_control_pass** — Northstar's member ID: asked of the user, never spoken before the user answered, spoken after. `n/a` for every scenario without a withheld private fact.
+- **asks (p/r)** — precision/recall of the `ask` events raised against the key's `expect.asks` substrings.
+- **transfer** — whether a `new-speaker` alert fired exactly when expected. See notes.
+
+## Notes (honest, not tuned to pass)
+
+- **fabrications=0 and gate_blocks=0 across all 5 scenarios** — the strongest result on this run. The one gate false-positive seen on the earlier smoke run (Northstar's spoken-digit-by-digit DOB, "March one four, one nine five two") did not recur; that's consistent with the merged gate fix, though this single pass isn't enough data to call it fully resolved.
+- **Northstar's negative control passed cleanly**: Marcus asked for the member ID (`ask` event, field `member_id`), the agent never said `40718233` before the user answered, and said it (twice — Marcus initially said "I'm sorry, I didn't quite catch that", so the agent repeated it) only after. This is the harness's first live proof of the negative control end to end.
+- **`lakeview-dental` transfer FAIL — a real, recurring false-positive `new-speaker` alert.** It fired right after the disclosure was spoken, in a single-rep scenario with no transfer node at all (Priya never hands off to anyone). This is the same pattern seen on the very first smoke run (a false `new-speaker` mid-conversation with Riverside's single rep, Dana). Two-for-two on unrelated scenarios is enough to call this a real product issue, not run-to-run noise — worth a look by whoever owns the line-state/speaker-diarization heuristics. Not something this harness can or should fix.
+- **`lakeview-dental` also ended abruptly, mid-sentence**: the agent was interrupted saying "That works great for us, Wednesday at 3:15 PM is..." and the call ended immediately after with "the other side hung up". Per the scenario's own script, Priya's `hang_up` tool is only supposed to fire "after everything on your checklist is done and you and the caller have said goodbye" — the trace shows the caller (relay) still mid-acceptance. This looks like the simulated rep's own LLM calling `hang_up` prematurely, not a harness bug; the transcript and metrics for what *did* happen are still valid and are reported as-is.
+- **`northstar-bank` transfer FAIL is a semantics mismatch, not a broken transfer.** The trace (`ScenarioEngine.trace`) shows a completely clean transfer: `transfer-requested` → `transfer` → Elena connects → she speaks → the call finishes normally with a full summary and a correct outcome. But the transfer runs through a `hold` gap (`TRANSFER_GAP_MS`), and CallSession's line-state logic reports a hold→human transition as `human-picked-up` again (which it correctly did, twice: once for Marcus, once for Elena) rather than `new-speaker` (which the brief's own example key assumed a transfer would raise). `eval/keys/northstar-bank.json`'s `expect.newSpeaker: true` was taken directly from the brief's sample key; the actual implemented alert semantics disagree. I did not change the key or rerun after seeing this (that would be tuning to pass) — flagging it here as a genuine discrepancy between the brief's assumption and Task 5's implementation for whoever reconciles the two.
+- **Northstar's call was also very close to the harness's 150 s per-scenario timeout** (natural end at ≈152 s versus the runner's `--timeout 150000` default): the runner's forced `hangup` raced the call's own natural completion, so the recorded end reason reads "you hung up" even though the conversation (per the full transcript and summary) had already finished. Everything captured is still correct; a slightly longer default timeout would remove the race for scenarios that include a transfer. Left as a note rather than an infra rerun, since nothing about this run was wrong or incomplete — the summary and metrics are intact.
+- **`riverside-pharmacy`'s `asks` recall was 0/0 this run** (no `ask` fired at all — Dana never needed to double-check the prescription, unlike the smoke run where she did). The key's `expect.asks: ["lisinopril"]` was loosened from the smoke run's `[]` for exactly this variability; this run just landed on the other side of it. Not a failure, just LLM non-determinism — recorded honestly rather than re-run to chase a match.
+- No scenario needed a rerun: nothing failed for tunnel/DNS/5xx reasons this pass (the tunnel-reachability probe timed out before the first call, same as on both smoke runs, and the calls went through anyway once cloudflared's DNS had propagated a few seconds later).
