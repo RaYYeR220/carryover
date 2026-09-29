@@ -165,8 +165,8 @@ export const HOW_STEPS: HowStep[] = [
         who: 'Dana · Riverside Pharmacy',
         text: [
           { text: 'Sure, let me pull up your' },
-          { text: 'lisinopril.', cls: 'lc' },
-          { text: 'Can I get your date of birth, please?' },
+          { text: 'lisinopril', cls: 'lc' },
+          { text: '. Can I get your date of birth, please?' },
         ],
       },
       { id: 'ask1', kind: 'you', who: 'Said for you · automatic', text: 'One moment, please.' },

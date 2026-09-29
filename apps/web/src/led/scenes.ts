@@ -102,7 +102,9 @@ export interface FlashParams {
 
 export function dial(m: LedFrame, L: Layout, ctx: SceneCtx): void {
   const t = ctx.now;
-  const lab = fitLabel(L, 'CALLING');
+  // "CALL", not "CALLING": at the call screen's and hero's tall-mode widths,
+  // "CALLING" is one dot too wide and fitLabel chops it to "CALLIN".
+  const lab = fitLabel(L, 'CALL');
   drawHand(m, L, true, 0.9, ctx);
   const W = waveBox(L, textWidth(lab));
   m.wave(W, (x) => (Math.sin(t * 6 - x * 0.5) > 0.6 ? W.amp * 0.5 : 0));
@@ -112,7 +114,10 @@ export function dial(m: LedFrame, L: Layout, ctx: SceneCtx): void {
 export function menu(m: LedFrame, L: Layout, ctx: SceneCtx, p: MenuParams): void {
   const pressed = !!p.key;
   const since = p.keySince;
-  const lab = fitLabel(L, pressed ? `KEY ${p.key}` : 'MENU');
+  // No space before the digit ("KEY2", not "KEY 2"): at the hero's narrow
+  // wide-mode width, the space pushed "KEY 2" one dot over budget and
+  // fitLabel dropped the digit, hiding which key was pressed.
+  const lab = fitLabel(L, pressed ? `KEY${p.key}` : 'MENU');
   const digits = p.key ?? '';
   if (L.mode === 'tall') keypad(m, { x: 1, y: 1, w: L.C - 2, h: L.R - 11 }, digits, pressed, since);
   else if (L.mode === 'wide') keypad(m, L.icon, digits, pressed, since);
@@ -134,7 +139,9 @@ export function menu(m: LedFrame, L: Layout, ctx: SceneCtx, p: MenuParams): void
 export function hold(m: LedFrame, L: Layout, ctx: SceneCtx, p: HoldParams): void {
   const t = ctx.now;
   const alt = Math.floor(t / 2.4) % 2 === 1;
-  const onHold = fitLabel(L, 'ON HOLD');
+  // "HOLD", not "ON HOLD": at the hero's tall-mode width, "ON HOLD" is one
+  // dot too wide and fitLabel chops it to "ON HOL".
+  const onHold = fitLabel(L, 'HOLD');
   const lab = alt ? p.clock : onHold;
   const lw = Math.max(textWidth(onHold), textWidth(p.clock || '0:00'));
   drawHand(m, L, false, 0.85, ctx);
@@ -177,7 +184,9 @@ export function flash(m: LedFrame, L: Layout, ctx: SceneCtx, p: FlashParams): vo
 
 export function ask(m: LedFrame, L: Layout, ctx: SceneCtx): void {
   const t = ctx.now;
-  const lab = fitLabel(L, 'ASKING');
+  // "ASK", not "ASKING": at the hero's narrow wide-mode width, "ASKING" is
+  // too wide and fitLabel chops it to "ASKI".
+  const lab = fitLabel(L, 'ASK');
   const pulse = ctx.reducedMotion ? 1 : 0.55 + (0.45 * (1 + Math.sin(t * 2.6))) / 2;
   const box = L.mode === 'tall' ? { x: 1, y: 1, w: L.C - 2, h: L.R - 11 } : L.icon;
   if (box) {
@@ -197,7 +206,9 @@ export function ask(m: LedFrame, L: Layout, ctx: SceneCtx): void {
 }
 
 export function end(m: LedFrame, L: Layout, ctx: SceneCtx): void {
-  const lab = fitLabel(L, 'ENDED');
+  // "END", not "ENDED": at the hero's narrow wide-mode width, "ENDED" is
+  // too wide and fitLabel chops it to "ENDE".
+  const lab = fitLabel(L, 'END');
   drawHand(m, L, false, 0.35, ctx);
   m.wave(waveBox(L, textWidth(lab)), () => 0);
   labelAt(m, L, lab, 0.6);

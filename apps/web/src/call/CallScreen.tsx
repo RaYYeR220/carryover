@@ -321,15 +321,17 @@ export function CallScreen({
           mobileControls={mobileControls}
         />
         <main className={s.main}>
-          {notice}
-          <CaptionLog
-            view={view}
-            now={now}
-            startedAt={start}
-            reducedMotion={reducedMotion}
-            layoutKey={cap}
-            focusTopKey={focusTop}
-          />
+          <div className={s.streamCol}>
+            {notice}
+            <CaptionLog
+              view={view}
+              now={now}
+              startedAt={start}
+              reducedMotion={reducedMotion}
+              layoutKey={cap}
+              focusTopKey={focusTop}
+            />
+          </div>
           <div className={[s.dock, ask && !typingAnswer && s.asking].filter(Boolean).join(' ')}>
             <div className={s.dockIn}>
               {endedUi ? (

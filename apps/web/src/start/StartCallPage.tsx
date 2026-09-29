@@ -204,21 +204,20 @@ export default function StartCallPage() {
                 {destination.kind === 'practice' && (
                   <PracticeBox line={practice} onRegenerate={practice.regenerate} />
                 )}
-                {autonomy === 'auto' && (
-                  <label className={s.field}>
-                    <span className={s.lbl}>Goal (optional)</span>
-                    <textarea
-                      value={goal}
-                      maxLength={400}
-                      placeholder="What should Carryover try to get done?"
-                      onChange={(e) => setGoal(e.target.value)}
-                    />
-                    <p className={s.help}>
-                      Carryover works toward this and still checks with you before sharing anything
-                      new.
-                    </p>
-                  </label>
-                )}
+                <label className={s.field}>
+                  <span className={s.lbl}>
+                    Goal <span className={s.optional}>(optional)</span>
+                  </span>
+                  <textarea
+                    value={goal}
+                    maxLength={400}
+                    placeholder="What should Carryover try to get done?"
+                    onChange={(e) => setGoal(e.target.value)}
+                  />
+                  <p className={s.help}>
+                    Carryover says this for you in Auto. In Relay and Assist it’s a note for you.
+                  </p>
+                </label>
               </div>
               <div>
                 <FactChips
@@ -231,7 +230,7 @@ export default function StartCallPage() {
                   Anything you leave off, it asks you first. It never guesses.
                 </p>
 
-                <span className={s.lbl} id={modeL}>
+                <span className={[s.lbl, s.modeLbl].join(' ')} id={modeL}>
                   How much should it do?
                 </span>
                 <Segmented

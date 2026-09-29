@@ -186,3 +186,52 @@ describe('StartCallPage: starting a call', () => {
     expect(router.state.location.pathname).toBe('/app/new');
   });
 });
+
+describe('StartCallPage: the goal field', () => {
+  it('is prefilled from the scenario and stays visible and editable in every autonomy mode', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('radio', { name: /Riverside Pharmacy/ });
+
+    // findByDisplayValue waits out the scenario→goal sync effect, rather
+    // than assuming it has already settled the instant the radio appears.
+    const goalBox = await screen.findByDisplayValue('Check on my lisinopril refill');
+    expect(goalBox).toHaveAttribute('placeholder', 'What should Carryover try to get done?');
+
+    // Assist is the scenario's suggested (and default) mode.
+    expect(screen.getByRole('radio', { name: 'Assist' })).toHaveAttribute('aria-checked', 'true');
+    expect(goalBox).toBeVisible();
+
+    await user.click(screen.getByRole('radio', { name: 'Relay' }));
+    expect(goalBox).toBeVisible();
+    await user.click(screen.getByRole('radio', { name: 'Auto' }));
+    expect(goalBox).toBeVisible();
+  });
+
+  it('sends the edited goal even in Relay mode, where it is only a note', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('radio', { name: /Riverside Pharmacy/ });
+    await screen.findByDisplayValue('Check on my lisinopril refill');
+
+    await user.click(screen.getByRole('radio', { name: 'Relay' }));
+    const goalBox = screen.getByPlaceholderText('What should Carryover try to get done?');
+    await user.clear(goalBox);
+    await user.type(goalBox, 'Ask when the store closes on Sundays');
+    await user.click(screen.getByRole('button', { name: 'Call Riverside Pharmacy' }));
+
+    await waitFor(() => expect(api.startCall).toHaveBeenCalled());
+    expect(api.startCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autonomy: 'relay',
+        goal: 'Ask when the store closes on Sundays',
+      }),
+    );
+  });
+
+  it('resets to empty for the practice line, which has no suggested goal', async () => {
+    renderPage('/app/new?to=practice');
+    await screen.findByText('ABC123');
+    expect(screen.getByPlaceholderText('What should Carryover try to get done?')).toHaveValue('');
+  });
+});
