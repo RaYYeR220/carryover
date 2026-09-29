@@ -1,24 +1,17 @@
-import type {
-  Autonomy,
-  CallTarget,
-  Fact,
-  ScenarioInfo,
-  StartCallRequest,
-  UserDescriptor,
+import {
+  type Autonomy,
+  type CallTarget,
+  type Fact,
+  type ScenarioInfo,
+  type StartCallRequest,
+  type UserDescriptor,
+  Voice as VoiceSchema,
 } from '@carryover/protocol';
 
-/** AssemblyAI voices offered on the start sheet. Alba is the default. */
-export const VOICES = [
-  'alba',
-  'jane',
-  'mary',
-  'eve',
-  'jean',
-  'michael',
-  'george',
-  'anna',
-  'vera',
-] as const;
+/** AssemblyAI voices offered on the start sheet, straight from the protocol's own
+ * allowlist so this list can never drift from what the server actually accepts. Alba is
+ * the default. */
+export const VOICES = VoiceSchema.options;
 export type Voice = (typeof VOICES)[number];
 export const DEFAULT_VOICE: Voice = 'alba';
 
@@ -86,7 +79,7 @@ export interface StartSelection {
   facts: readonly Fact[];
   /** Keys of the facts the user chose to share for this call. */
   sharedKeys: ReadonlySet<string>;
-  voice: string;
+  voice: Voice;
 }
 
 /**

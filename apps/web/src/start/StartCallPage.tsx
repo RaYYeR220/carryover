@@ -20,6 +20,7 @@ import {
   targetFor,
   VOICE_LABELS,
   VOICES,
+  type Voice,
 } from './request';
 import s from './StartCallPage.module.css';
 import { usePracticeLine } from './usePracticeLine';
@@ -61,7 +62,7 @@ export default function StartCallPage() {
   const [destination, setDestination] = useState<Destination>({ kind: 'practice' });
   const [goal, setGoal] = useState('');
   const [autonomy, setAutonomy] = useState<Autonomy>(DEFAULT_AUTONOMY);
-  const [voice, setVoice] = useState<string>(DEFAULT_VOICE);
+  const [voice, setVoice] = useState<Voice>(DEFAULT_VOICE);
   const [shared, setShared] = useState<ReadonlySet<string>>(DEFAULT_SHARED_KEYS);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -244,7 +245,7 @@ export default function StartCallPage() {
 
                 <label className={s.field}>
                   <span className={s.lbl}>Voice</span>
-                  <select value={voice} onChange={(e) => setVoice(e.target.value)}>
+                  <select value={voice} onChange={(e) => setVoice(e.target.value as Voice)}>
                     {VOICES.map((v) => (
                       <option key={v} value={v}>
                         {VOICE_LABELS[v]}

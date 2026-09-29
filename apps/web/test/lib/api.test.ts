@@ -21,7 +21,7 @@ const REQ: StartCallRequest = {
   userDescriptor: 'deaf',
   autonomy: 'assist',
   facts: [{ key: 'dob', label: 'Date of birth', value: 'March 14, 1952' }],
-  voice: 'harper',
+  voice: 'jane',
 };
 
 describe('api client', () => {

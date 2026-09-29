@@ -11,8 +11,8 @@
 // available there, so those four metrics come back "n/a (remote)".
 //
 // Usage (from carryover/eval, with the repo's .env loaded):
-//   tsx --env-file=../../.env runner.ts --only=riverside-pharmacy
-//   tsx --env-file=../../.env runner.ts
+//   tsx --env-file=../.env runner.ts --only=riverside-pharmacy
+//   tsx --env-file=../.env runner.ts
 //   tsx runner.ts --base https://carryover-r8ak.onrender.com --only=riverside-pharmacy
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -22,6 +22,7 @@ import type {
   AppEvent,
   StartCallRequest,
   StartCallResponse,
+  Voice,
 } from '@carryover/protocol';
 import WebSocket from 'ws';
 import { disclosureText } from '../apps/server/src/call/callSession.js';
@@ -50,7 +51,7 @@ const SUMMARY_GRACE_MS = 8000;
 interface Args {
   only?: string[];
   base?: string;
-  voice: string;
+  voice: Voice;
   port: number;
   timeoutMs: number;
 }
@@ -77,7 +78,9 @@ function parseArgs(argv: string[]): Args {
   return {
     only: out.only ? out.only.split(',').map((s) => s.trim()) : undefined,
     base: out.base,
-    voice: out.voice ?? DEFAULT_VOICE,
+    // The server itself validates this against the protocol's Voice allowlist on
+    // POST /api/calls; a bad --voice CLI arg is a 400 from the server, not a crash here.
+    voice: (out.voice ?? DEFAULT_VOICE) as Voice,
     port: out.port ? Number(out.port) : 8787,
     timeoutMs: out.timeout ? Number(out.timeout) : DEFAULT_CALL_TIMEOUT_MS,
   };
@@ -178,7 +181,7 @@ async function waitUntilReachable(
 interface RunContext {
   restBase: string; // for REST + WS control traffic (always local when in-process)
   key: AnswerKey;
-  voice: string;
+  voice: Voice;
   timeoutMs: number;
   // Only set when running in-process: lets us pull the ScenarioEngine trace afterwards.
   lookupLeg?: (callId: string) => ScenarioLeg | undefined;

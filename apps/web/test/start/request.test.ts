@@ -79,7 +79,7 @@ describe('buildStartCallRequest', () => {
       autonomy: 'relay' as const,
       facts: [],
       sharedKeys: new Set<string>(),
-      voice: 'alba',
+      voice: 'alba' as const,
     };
     expect(buildStartCallRequest({ ...base, goal: '' })).not.toHaveProperty('goal');
     expect(buildStartCallRequest({ ...base, goal: '   ' })).not.toHaveProperty('goal');

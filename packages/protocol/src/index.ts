@@ -22,6 +22,21 @@ export const UserDescriptor = z.enum([
 ]);
 export type UserDescriptor = z.infer<typeof UserDescriptor>;
 
+// Each distinct voice creates a stored agent on the AssemblyAI account, so the request
+// can't take an arbitrary string -- this is the fixed set the start page offers.
+export const Voice = z.enum([
+  'alba',
+  'jane',
+  'mary',
+  'eve',
+  'jean',
+  'michael',
+  'george',
+  'anna',
+  'vera',
+]);
+export type Voice = z.infer<typeof Voice>;
+
 export const Fact = z.object({
   key: z.string().min(1).max(40), // 'dob', 'member_id', 'address'
   label: z.string().min(1).max(60), // 'Date of birth'
@@ -43,7 +58,7 @@ export const StartCallRequest = z.object({
   autonomy: Autonomy,
   goal: z.string().max(400).optional(),
   facts: z.array(Fact).max(20),
-  voice: z.string().min(1).max(20),
+  voice: Voice,
 });
 export type StartCallRequest = z.infer<typeof StartCallRequest>;
 
