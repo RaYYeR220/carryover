@@ -203,11 +203,11 @@ Run with `pnpm test` (`pnpm -r test`, i.e. every workspace package), against thi
 
 | Package | Test files | Tests |
 |---|---|---|
-| `@carryover/protocol` | 1 | 3 |
-| `@carryover/server` | 28 | 468 |
-| `@carryover/web` | 27 | 318 |
-| `@carryover/eval` | 1 | 40 |
-| **Total** | **57** | **829** |
+| `@carryover/protocol` | 1 | 4 |
+| `@carryover/server` | 28 | 481 |
+| `@carryover/web` | 29 | 326 |
+| `@carryover/eval` | 1 | 42 |
+| **Total** | **59** | **853** |
 
 All green. `pnpm typecheck` and `pnpm lint` (Biome, 280 files) are both clean.
 

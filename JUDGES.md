@@ -60,7 +60,7 @@ Open **[/app/new?to=practice](https://carryover-r8ak.onrender.com/app/new?to=pra
 
 ```bash
 pnpm install
-pnpm test        # protocol 3 + server 468 + web 318 + eval 40 = 829 tests, all green
+pnpm test        # protocol 4 + server 481 + web 326 + eval 42 = 853 tests, all green
 pnpm typecheck
 pnpm lint
 ```
