@@ -70,8 +70,19 @@ export function usePracticeLine(active: boolean): PracticeLineState & { regenera
           if (line.status === 'ended') endedRef.current = true;
           setState((s) => (s.code === code ? { ...s, status: line.status } : s));
         })
-        .catch(() => {
-          // Transient network hiccup; the next tick tries again.
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          // The 30-minute TTL passed and the code was forgotten: polling forever would
+          // never recover on its own. Anything else (a network hiccup) is transient --
+          // the next tick tries again.
+          if (err instanceof ApiError && err.status === 404) {
+            endedRef.current = true;
+            setState((s) =>
+              s.code === code
+                ? { ...s, error: 'This practice line expired — create a new one.' }
+                : s,
+            );
+          }
         });
     };
     const id = setInterval(tick, POLL_MS);
