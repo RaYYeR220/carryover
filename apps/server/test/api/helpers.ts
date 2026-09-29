@@ -45,9 +45,15 @@ export function fakeDeps() {
   };
 }
 
-export async function startTestServer(opts: { cfgOverrides?: Partial<Config> } = {}) {
+export async function startTestServer(
+  opts: { cfgOverrides?: Partial<Config>; webDist?: string | null } = {},
+) {
   const deps = fakeDeps();
-  const server = await createServer({ cfg: cfg(opts.cfgOverrides), overrides: deps.overrides });
+  const server = await createServer({
+    cfg: cfg(opts.cfgOverrides),
+    overrides: deps.overrides,
+    webDist: opts.webDist,
+  });
   const address = server.app.server.address() as AddressInfo;
   const httpBase = `http://127.0.0.1:${address.port}`;
   const wsBase = `ws://127.0.0.1:${address.port}`;
