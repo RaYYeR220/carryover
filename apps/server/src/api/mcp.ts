@@ -54,7 +54,11 @@ function buildMcpServer(ctx: ServerContext, ip: string): McpServer {
       description:
         'Create a practice line (a QR code / short code) a person can answer on their phone.',
     },
-    async () => ok(await createLine(ctx)),
+    async () => {
+      const result = await createLine(ctx, ip);
+      if (!result.ok) return fail(result.error);
+      return ok(result.line);
+    },
   );
 
   server.registerTool(
@@ -66,7 +70,7 @@ function buildMcpServer(ctx: ServerContext, ip: string): McpServer {
     async (args) => {
       const result = await startCall(ctx, ip, args);
       if (!result.ok) return fail(result.error);
-      const watchUrl = `${ctx.cfg.publicBaseUrl}/app/${result.callId}?token=${result.appToken}`;
+      const watchUrl = `${ctx.cfg.publicBaseUrl}/app/call/${result.callId}?token=${result.appToken}`;
       return ok({ callId: result.callId, appToken: result.appToken, watchUrl });
     },
   );

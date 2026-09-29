@@ -92,6 +92,26 @@ describe('MCP /mcp', () => {
     expect(line.qrSvg.startsWith('<svg')).toBe(true);
   });
 
+  it('create_practice_line hits the same per-IP rate limit as POST /api/lines', async () => {
+    server = await startTestServer();
+    client = await connectClient(server);
+    for (let i = 0; i < 30; i++) {
+      const res = (await client.callTool({
+        name: 'create_practice_line',
+        arguments: {},
+      })) as CallToolResult;
+      expect(res.isError).toBeFalsy();
+    }
+    const res = (await client.callTool({
+      name: 'create_practice_line',
+      arguments: {},
+    })) as CallToolResult;
+    expect(res.isError).toBe(true);
+    expect((res.content[0] as { text: string }).text).toBe(
+      'Too many lines from this address. Try again later.',
+    );
+  });
+
   it('places a call, reads it back, says something, answers an ask, then hangs up', async () => {
     server = await startTestServer();
     client = await connectClient(server);
@@ -112,7 +132,7 @@ describe('MCP /mcp', () => {
     };
     expect(placed.callId).toBeTruthy();
     expect(placed.watchUrl).toBe(
-      `https://example.com/app/${placed.callId}?token=${placed.appToken}`,
+      `https://example.com/app/call/${placed.callId}?token=${placed.appToken}`,
     );
 
     const getRes = await client.callTool({

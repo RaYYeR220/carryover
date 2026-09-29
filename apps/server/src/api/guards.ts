@@ -5,7 +5,14 @@ import type { FastifyRequest } from 'fastify';
 // duplicated here -- it lives in CallRegistry, which already throws LimitError.
 
 export const BODY_LIMIT_BYTES = 64 * 1024;
+// ws's own default maxPayload is 100 MiB; without an explicit cap, one free line lets
+// anyone stream 100 MB frames at the 512 MB demo instance until it falls over.
+export const WS_MAX_PAYLOAD_BYTES = 64 * 1024;
 export const RATE_LIMIT_PER_HOUR = 10;
+// A handful of IPs could otherwise keep all MAX_CONCURRENT_CALLS slots busy around the
+// clock; this caps total demo spend regardless of how the load is spread across callers.
+export const GLOBAL_RATE_LIMIT_PER_HOUR = 40;
+export const LINE_RATE_LIMIT_PER_HOUR = 30;
 const WINDOW_MS = 60 * 60_000;
 
 // Fastify's own req.ip, resolved with `trustProxy` awareness (see server.ts): it only reads

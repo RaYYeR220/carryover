@@ -28,7 +28,13 @@ export interface ServerContext {
   lines: LineCodes;
   deps: CallDeps;
   limiter: IpRateLimiter;
+  // A single shared bucket (always checked with the key 'global'): caps total demo spend
+  // across every caller, on top of each IP's own limiter above.
+  globalLimiter: IpRateLimiter;
+  lineLimiter: IpRateLimiter;
 }
+
+const GLOBAL_LIMIT_KEY = 'global';
 
 export type StartCallResult =
   | { ok: true; callId: string; appToken: string }
@@ -69,9 +75,19 @@ export async function lineInfo(
   return { code: handle.code, url, qrSvg, status: handle.status };
 }
 
-export async function createLine(ctx: ServerContext): Promise<LineInfo> {
+export type CreateLineResult =
+  | { ok: true; line: LineInfo }
+  | { ok: false; status: 429; error: string };
+
+// Shared by POST /api/lines and the MCP create_practice_line tool: an unlimited flood of
+// line creations would evict everyone else's idle lines (LineCodes caps at 1000, evicting
+// the oldest idle one past that).
+export async function createLine(ctx: ServerContext, ip: string): Promise<CreateLineResult> {
+  if (!ctx.lineLimiter.check(ip)) {
+    return { ok: false, status: 429, error: 'Too many lines from this address. Try again later.' };
+  }
   const handle = ctx.lines.create();
-  return lineInfo(ctx.cfg, handle, true);
+  return { ok: true, line: await lineInfo(ctx.cfg, handle, true) };
 }
 
 export async function getLine(ctx: ServerContext, code: string): Promise<LineInfo | undefined> {
@@ -132,6 +148,13 @@ export async function startCall(
 
   if (!ctx.limiter.check(ip)) {
     return { ok: false, status: 429, error: 'Too many calls from this address. Try again later.' };
+  }
+  if (!ctx.globalLimiter.check(GLOBAL_LIMIT_KEY)) {
+    return {
+      ok: false,
+      status: 429,
+      error: 'The demo is busy — try again in a few minutes.',
+    };
   }
 
   let session: CallSession;
@@ -194,7 +217,11 @@ export function registerRoutes(app: FastifyInstance, ctx: ServerContext): void {
 
   app.get('/api/scenarios', async (): Promise<ScenarioInfo[]> => listScenarios());
 
-  app.post('/api/lines', async () => createLine(ctx));
+  app.post('/api/lines', async (req, reply) => {
+    const result = await createLine(ctx, clientIp(req));
+    if (!result.ok) return reply.code(result.status).send({ error: result.error });
+    return result.line;
+  });
 
   app.get<{ Params: { code: string } }>('/api/lines/:code', async (req, reply) => {
     const info = await getLine(ctx, req.params.code);

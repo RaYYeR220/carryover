@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { WS_MAX_PAYLOAD_BYTES } from '../../src/api/guards.js';
 import type { CallDeps } from '../../src/call/callSession.js';
 import { FakeLeg } from '../fakes/fakeLeg.js';
 import {
@@ -94,6 +95,19 @@ describe('WS /ws/app', () => {
     expect(session.autonomy).toBe('auto');
 
     await closeSocket(sock);
+  });
+
+  it('closes with 1009 on a frame over the payload cap, instead of accepting it for free', async () => {
+    server = await startTestServer();
+    const { session } = await makeLiveCall(server);
+    const sock = await connectSocket(
+      `${server.wsBase}/ws/app?callId=${session.id}&token=${session.appToken}`,
+    );
+    await sock.next(); // initial call.state
+
+    const closed = sock.waitClose();
+    sock.ws.send(Buffer.alloc(WS_MAX_PAYLOAD_BYTES + 1, 0x41), { binary: true });
+    expect((await closed).code).toBe(1009);
   });
 });
 

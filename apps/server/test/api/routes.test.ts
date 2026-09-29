@@ -100,6 +100,17 @@ describe('REST API', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it('enforces a per-IP rate limit of 30 lines/hour', async () => {
+    server = await startTestServer();
+    for (let i = 0; i < 30; i++) {
+      const res = await server.app.inject({ method: 'POST', url: '/api/lines' });
+      expect(res.statusCode).toBe(200);
+    }
+    const res = await server.app.inject({ method: 'POST', url: '/api/lines' });
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toBeTruthy();
+  });
+
   it('POST /api/calls 400s on a body that fails validation', async () => {
     server = await startTestServer();
     const res = await server.app.inject({
@@ -337,6 +348,36 @@ describe('REST API', () => {
         payload: validCallRequest(),
       });
       expect(res.statusCode).toBe(429);
+    } finally {
+      await failing.close();
+    }
+  });
+
+  it('caps total calls at 40/hour across every IP, even when no single IP is over its own limit', async () => {
+    // One call each from 40 distinct client IPs (the trusted proxy's rightmost X-Forwarded-For
+    // entry is what Fastify resolves req.ip to here -- see the proxy tests above), each nowhere
+    // near its own 10/hour quota, so only the shared global budget can be what trips.
+    const failing = await createFailingServer({ trustProxy: 'loopback,linklocal,uniquelocal' });
+    try {
+      for (let i = 0; i < 40; i++) {
+        const res = await failing.app.inject({
+          method: 'POST',
+          url: '/api/calls',
+          remoteAddress: '10.1.2.3',
+          headers: { 'x-forwarded-for': `9.9.9.9, 6.6.${Math.floor(i / 255)}.${i % 255}` },
+          payload: validCallRequest(),
+        });
+        expect(res.statusCode).toBe(502);
+      }
+      const res = await failing.app.inject({
+        method: 'POST',
+        url: '/api/calls',
+        remoteAddress: '10.1.2.3',
+        headers: { 'x-forwarded-for': '9.9.9.9, 6.6.9.9' },
+        payload: validCallRequest(),
+      });
+      expect(res.statusCode).toBe(429);
+      expect(res.json().error).toBe('The demo is busy — try again in a few minutes.');
     } finally {
       await failing.close();
     }

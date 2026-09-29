@@ -7,7 +7,13 @@ import { AgentRegistry } from './aai/agentRegistry.js';
 import { CaptionsStream } from './aai/captions.js';
 import { VoiceAgentSession } from './aai/voiceAgent.js';
 import { registerAppSocket } from './api/appSocket.js';
-import { BODY_LIMIT_BYTES, IpRateLimiter } from './api/guards.js';
+import {
+  BODY_LIMIT_BYTES,
+  GLOBAL_RATE_LIMIT_PER_HOUR,
+  IpRateLimiter,
+  LINE_RATE_LIMIT_PER_HOUR,
+  WS_MAX_PAYLOAD_BYTES,
+} from './api/guards.js';
 import { registerLineSocket } from './api/lineSocket.js';
 import { registerMcp } from './api/mcp.js';
 import type { ServerContext } from './api/routes.js';
@@ -121,9 +127,13 @@ export async function createServer(opts: CreateServerOptions = {}): Promise<Crea
   const lines = new LineCodes();
   const deps: CallDeps = { ...defaultCallDeps(cfg), ...opts.overrides };
   const limiter = new IpRateLimiter();
-  const ctx: ServerContext = { cfg, registry, lines, deps, limiter };
+  const globalLimiter = new IpRateLimiter({ limit: GLOBAL_RATE_LIMIT_PER_HOUR });
+  const lineLimiter = new IpRateLimiter({ limit: LINE_RATE_LIMIT_PER_HOUR });
+  const ctx: ServerContext = { cfg, registry, lines, deps, limiter, globalLimiter, lineLimiter };
 
-  await app.register(fastifyWebsocket);
+  // ws's default maxPayload (100 MiB) would let one socket buffer huge frames for free;
+  // cap it at the same ceiling as an HTTP request body.
+  await app.register(fastifyWebsocket, { options: { maxPayload: WS_MAX_PAYLOAD_BYTES } });
 
   registerBrainRoute(app, {
     cfg,
