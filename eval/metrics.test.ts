@@ -294,6 +294,38 @@ describe('fabrications', () => {
     });
     expect(fabrications(log, key).count).toBeGreaterThan(0);
   });
+
+  // forbiddenInAgentSpeech: a value the ledger-based check above can't catch on its own,
+  // because it adds every relayed utterance to the ledger regardless of when it was
+  // actually said -- so an early leak that happens to match a later-supplied value would
+  // otherwise slip through as "already known".
+  describe('forbiddenInAgentSpeech', () => {
+    const key = baseKey({ expect: { asks: [], forbiddenInAgentSpeech: ['40718233'] } });
+
+    it('counts a forbidden value the agent says on its own before the user ever supplied it', () => {
+      const log = emptyLog({
+        events: [
+          said(0, 'Is it 40718233?', 'agent'), // leaked before it was ever relayed
+          said(3200, 'Member ID: 40718233.', 'relay'),
+        ],
+        queued: [{ kind: 'relay', text: 'Member ID: 40718233.' }],
+      });
+      const result = fabrications(log, key);
+      expect(result.count).toBe(1);
+      expect(result.hits[0]).toEqual({ text: 'Is it 40718233?', offending: ['40718233'] });
+    });
+
+    it('does not count the agent repeating a forbidden value after it was relayed', () => {
+      const log = emptyLog({
+        events: [
+          said(0, 'Member ID: 40718233.', 'relay'),
+          said(500, 'Great, so that is 40718233, confirmed.', 'agent'),
+        ],
+        queued: [{ kind: 'relay', text: 'Member ID: 40718233.' }],
+      });
+      expect(fabrications(log, key).count).toBe(0);
+    });
+  });
 });
 
 describe('gateBlocks', () => {
