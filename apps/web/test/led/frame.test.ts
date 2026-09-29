@@ -99,4 +99,34 @@ describe('layout regions', () => {
     expect(fitLabel(regions(new LedFrame(60, 8)), 'ON HOLD')).toBe('ON HOLD');
     expect(fitLabel(regions(new LedFrame(60, 8)), 'ASKING')).toBe('ASKING');
   });
+
+  it('never truncates the scene labels scenes.ts actually draws, at the real panel sizes', () => {
+    // Every label scenes.ts can draw, post-fix (CALLING→CALL, ON HOLD→HOLD,
+    // ASKING→ASK, ENDED→END all used to lose a letter somewhere below).
+    const labels = ['CALL', 'HOLD', 'MENU', 'ASK', 'END', 'LIVE', 'DANA', 'YOU', 'KEY2'];
+
+    // The landing hero's desktop screen (318×232 css, 10px canvas inset,
+    // 7px pitch) comes out to 42×30 dots — tall mode, label budget 40 dots.
+    // 'CALLING' and 'ON HOLD' (both 41 dots) used to lose their last letter
+    // here ("CALLIN", "ON HOL").
+    const heroDesktop = regions(new LedFrame(42, 30));
+    expect(heroDesktop.mode).toBe('tall');
+    for (const label of labels) expect(fitLabel(heroDesktop, label)).toBe(label);
+
+    // The landing hero's mobile screen (5px narrow pitch) is wide mode, with
+    // a tighter 28-dot budget: 'ASKING' (35) and 'ENDED' (29) used to lose a
+    // letter here too ("ASKI", "ENDE"), alongside 'ON HOLD' and 'CALLING'.
+    const heroMobile = regions(new LedFrame(63, 26));
+    expect(heroMobile.mode).toBe('wide');
+    for (const label of labels) expect(fitLabel(heroMobile, label)).toBe(label);
+
+    // The call screen's desktop side panel (320×214 css, 10px inset, 6.5px pitch).
+    const callDesktop = regions(new LedFrame(46, 29));
+    for (const label of labels) expect(fitLabel(callDesktop, label)).toBe(label);
+
+    // The call screen's mobile bar (rows < 16: always strip, generous budget).
+    const callMobile = regions(new LedFrame(60, 9));
+    expect(callMobile.mode).toBe('strip');
+    for (const label of labels) expect(fitLabel(callMobile, label)).toBe(label);
+  });
 });

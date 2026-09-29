@@ -67,6 +67,11 @@ describe('extractFacts normalisation', () => {
     expect(norms('July fourth, twenty twenty-one')).toEqual(['date:2021-07-04']);
   });
 
+  it('parses a day and year spoken as individually spelled digits (gate false positive, seen live)', () => {
+    expect(norms('March one four, one nine five two')).toEqual(['date:1952-03-14']);
+    expect(norms('March one five, one nine five two')).toEqual(['date:1952-03-15']);
+  });
+
   it('keeps month-and-day or month-and-year dates as partial dates', () => {
     expect(norms('March fourteenth')).toEqual(['date:--03-14']);
     expect(norms('born in June 1986')).toEqual(['date:1986-06']);
@@ -372,5 +377,19 @@ describe('fix round 2: year allowance, 24/7, "a hundred", long separators', () =
   }
   it('still lets the allowed ID through long separators', () => {
     expect(checkSentence('It is 88 ....... 1204 ....... 77.', ledger).ok).toBe(true);
+  });
+});
+
+describe('fix round 3: DOB spoken as individually spelled digits (gate false positive, seen live)', () => {
+  const ledger = createLedger(['March 14, 1952']);
+  it('passes the consented DOB spoken as spelled digits ("March one four, one nine five two")', () => {
+    expect(
+      checkSentence('Her date of birth is March one four, one nine five two.', ledger).ok,
+    ).toBe(true);
+  });
+  it('still blocks a different spelled-digit day ("March one five, one nine five two")', () => {
+    expect(
+      checkSentence('Her date of birth is March one five, one nine five two.', ledger).ok,
+    ).toBe(false);
   });
 });

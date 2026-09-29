@@ -6,8 +6,12 @@ import { initialView, reduce } from '../call/state';
 import { fmtClock } from '../lib/format';
 import { Button, IconButton } from '../ui';
 import {
+  ASK_ID,
+  ASK_JUMP_MS,
+  type AskAnswer,
+  buildPharmacyScript,
+  callDisplayMs,
   PHARMACY_DETAILS,
-  PHARMACY_SCRIPT,
   PHARMACY_VAULT,
   rebase,
   SAMPLE_TOTAL_MS,
@@ -18,6 +22,9 @@ import s from './SamplePlayer.module.css';
 const TICK_MS = 200;
 /** How long a typed reply waits before Carryover "says" it, in the sample. */
 const SAY_DELAY_MS = 900;
+/** Autoplay kicks in shortly after load, so the sample never just sits at 0:00. */
+const AUTOPLAY_DELAY_MS = 600;
+const SHARE_ANSWER: AskAnswer = { kind: 'share' };
 
 /** A line the visitor typed themselves, merged into the scripted timeline. */
 interface Extra {
@@ -46,16 +53,19 @@ export default function SamplePlayer() {
   const [elapsed, setElapsed] = useState(() =>
     seek != null ? Math.min(seek, SAMPLE_TOTAL_MS) : 0,
   );
-  // Glyph Night's demo starts paused: the visitor presses Play.
+  // Glyph Night's demo starts paused for an instant, then autoplays (below):
+  // a visitor should never just sit looking at a 0:00 Play button.
   const [playing, setPlaying] = useState(false);
+  const [answer, setAnswer] = useState<AskAnswer>(SHARE_ANSWER);
   const [extras, setExtras] = useState<Extra[]>([]);
   const [playId, setPlayId] = useState(0);
   const baseRef = useRef(Date.now());
   const nextExtraId = useRef(0);
 
+  const script = useMemo(() => buildPharmacyScript(answer), [answer]);
   const timeline = useMemo(
-    () => [...PHARMACY_SCRIPT, ...extras].sort((a, b) => a.t - b.t),
-    [extras],
+    () => [...script, ...extras].sort((a, b) => a.t - b.t),
+    [script, extras],
   );
 
   const view = useMemo(() => {
@@ -82,7 +92,17 @@ export default function SamplePlayer() {
     if (elapsed >= SAMPLE_TOTAL_MS) setPlaying(false);
   }, [elapsed]);
 
-  const now = baseRef.current + elapsed;
+  // Autoplay shortly after load. A `?t=` dev seek (a frozen frame for
+  // screenshots) opts out. Reduced motion still autoplays — nothing here
+  // flashes; the no-flash rules live in CallScreen/PickupTakeover.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once, on mount
+  useEffect(() => {
+    if (seek != null) return;
+    const id = setTimeout(() => setPlaying(true), AUTOPLAY_DELAY_MS);
+    return () => clearTimeout(id);
+  }, []);
+
+  const now = baseRef.current + callDisplayMs(elapsed);
 
   function advanceTo(target: number) {
     setElapsed((e) => Math.max(e, Math.min(target, SAMPLE_TOTAL_MS)));
@@ -96,6 +116,7 @@ export default function SamplePlayer() {
   function replay() {
     baseRef.current = Date.now();
     setExtras([]);
+    setAnswer(SHARE_ANSWER);
     setElapsed(0);
     setPlaying(true);
     setPlayId((n) => n + 1);
@@ -116,18 +137,20 @@ export default function SamplePlayer() {
   function handleCommand(cmd: AppCommand) {
     switch (cmd.t) {
       case 'answer': {
-        // Sharing (or declining, or typing) the asked-for fact advances the
-        // script straight to how it's scripted to resolve, including the
-        // line said right after (e.g. "March 14, 1952."), not just the row
-        // that marks the fact as shared.
-        const i = PHARMACY_SCRIPT.findIndex(
-          (se) => se.event.t === 'ask.resolved' && se.event.askId === cmd.askId,
+        if (cmd.askId !== ASK_ID) return;
+        // Honour whichever choice the visitor made on the ask card: Share
+        // resolves "shared" and says the profile fact; Type says exactly
+        // what they typed and resolves "typed"; Decline resolves "declined"
+        // and Carryover apologises before Dana offers another way. Either
+        // way, jump straight to the line said right after the resolution.
+        setAnswer(
+          cmd.decline
+            ? { kind: 'declined' }
+            : cmd.text != null
+              ? { kind: 'typed', text: cmd.text }
+              : SHARE_ANSWER,
         );
-        if (i < 0) return;
-        const resolved = PHARMACY_SCRIPT[i] as (typeof PHARMACY_SCRIPT)[number];
-        const next = PHARMACY_SCRIPT[i + 1];
-        const target = next && next.t - resolved.t < 1000 ? next.t : resolved.t;
-        advanceTo(target);
+        advanceTo(ASK_JUMP_MS);
         return;
       }
       case 'say': {

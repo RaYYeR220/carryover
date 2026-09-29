@@ -1,4 +1,5 @@
-import { ScenarioEngine, type ScenarioEngineDeps } from '../scenarios/engine.js';
+import { stderrDebugLog } from '../debugLog.js';
+import { ScenarioEngine, type ScenarioEngineDeps, type TraceEntry } from '../scenarios/engine.js';
 import type { Scenario } from '../scenarios/types.js';
 import { defaultSendDtmf, type PhoneLeg } from './phoneLeg.js';
 
@@ -6,6 +7,14 @@ export type ScenarioLegDeps = Omit<ScenarioEngineDeps, 'emitToCaller' | 'onEnded
 
 // A simulated business as a phone leg: rings for the scenario's ringMs, then the engine
 // answers (menu, hold, representative or voicemail).
+// With LOG_LEVEL=debug the simulated business side joins the timing lines (event names
+// and detail lengths only), so a live run shows what the representative heard and when.
+function traceToDebug(): ((e: TraceEntry) => void) | undefined {
+  if (process.env.LOG_LEVEL !== 'debug') return undefined;
+  const debug = stderrDebugLog();
+  return (e) => debug(`biz.${e.event}`, { node: e.node, len: e.detail?.length });
+}
+
 export class ScenarioLeg implements PhoneLeg {
   readonly label: string;
   readonly kind = 'scenario' as const;
@@ -23,6 +32,7 @@ export class ScenarioLeg implements PhoneLeg {
     this.label = `${s.info.business} (simulated)`;
     this.eng = new ScenarioEngine(s, {
       ...deps,
+      log: deps.log ?? traceToDebug(),
       emitToCaller: (mu) => {
         for (const cb of this.audioCbs) cb(mu);
       },

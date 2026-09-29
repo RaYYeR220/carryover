@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from '../../src/server.js';
 import {
@@ -351,9 +354,26 @@ describe('REST API', () => {
   });
 
   it('serves a 404 JSON body for unknown routes when there is no web build', async () => {
-    server = await startTestServer();
+    server = await startTestServer({ webDist: null });
     const res = await server.app.inject({ method: 'GET', url: '/app/some-call-id' });
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBeTruthy();
+  });
+
+  it('serves the SPA index.html for client-side routes when webDist points at a build, but still 404s unknown API routes as JSON', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'carryover-web-dist-'));
+    writeFileSync(join(dir, 'index.html'), '<!doctype html><title>carryover</title>');
+    try {
+      server = await startTestServer({ webDist: dir });
+      const page = await server.app.inject({ method: 'GET', url: '/app/new' });
+      expect(page.statusCode).toBe(200);
+      expect(page.body).toContain('<title>carryover</title>');
+
+      const api = await server.app.inject({ method: 'GET', url: '/api/unknown' });
+      expect(api.statusCode).toBe(404);
+      expect(api.json().error).toBeTruthy();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

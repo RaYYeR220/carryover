@@ -4,6 +4,8 @@
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
+  /* Fills the remaining height when a sibling notice sits above it in a flex column. */
+  flex: 1 1 0;
 }
 
 .stream {

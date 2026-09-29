@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { initialView, reduce } from '../../src/call/state';
-import { PHARMACY_SCRIPT, rebase, SAMPLE_TOTAL_MS } from '../../src/sample/pharmacyScript';
+import {
+  ASK_ID,
+  buildPharmacyScript,
+  callDisplayMs,
+  PHARMACY_DETAILS,
+  PHARMACY_SCRIPT,
+  rebase,
+  SAMPLE_TOTAL_MS,
+} from '../../src/sample/pharmacyScript';
 
 describe('pharmacyScript', () => {
   it('is sorted by t', () => {
@@ -37,15 +45,15 @@ describe('pharmacyScript', () => {
       se.event.t === 'agent.said' ? [se.event.text] : [],
     );
     expect(texts).toContain(
-      "Hi, this is Carryover, an automated relay calling for Maya, who is Deaf and reading along. Please speak normally — I'll pass on everything you say.",
+      "Hi, I'm Carryover, an automated relay calling for Maya, who is Deaf and reading along.",
     );
-    expect(texts).toContain("Thank you, that's all I needed.");
+    expect(texts).toContain('Thursday works. Thank you, Dana!');
 
     const queued = PHARMACY_SCRIPT.flatMap((se) =>
       se.event.t === 'relay.queued' ? [se.event] : [],
     );
     expect(queued).toHaveLength(1);
-    expect(queued[0]?.text).toBe("Thank you, that's all I needed.");
+    expect(queued[0]?.text).toBe('Thursday works. Thank you, Dana!');
     const spokenNonces = PHARMACY_SCRIPT.flatMap((se) =>
       se.event.t === 'relay.spoken' ? [se.event.nonce] : [],
     );
@@ -78,13 +86,85 @@ describe('pharmacyScript', () => {
     expect(view.summary?.transcript.length).toBeGreaterThan(0);
   });
 
-  it('rebase shifts every timestamp in an event by the same base, keeping order', () => {
+  it('names a real AssemblyAI voice, matching the start page', () => {
+    expect(PHARMACY_DETAILS.voice).toBe('Alba · warm, US');
+  });
+
+  it('rebase shifts every timestamp by base, through the realistic hold clock, keeping order', () => {
     const base = 1_760_000_000_000;
     const rebased = PHARMACY_SCRIPT.map((se) => rebase(se.event, base));
     const view = rebased.reduce(reduce, initialView);
     expect(view.ended).toBe(true);
     expect(view.summary?.startedAt).toBe(base);
-    expect(view.summary?.endedAt).toBe(base + SAMPLE_TOTAL_MS);
+    // The displayed call runs longer than the raw ~67.5 s of playback: the
+    // 8.4 s of compressed hold maps to a realistic 4:30 wait.
+    expect(view.summary?.endedAt).toBeGreaterThan(base + SAMPLE_TOTAL_MS);
     for (const t of view.summary?.transcript ?? []) expect(t.at).toBeGreaterThanOrEqual(base);
+  });
+
+  describe('callDisplayMs (B’s callT mapping)', () => {
+    it('is identity before hold starts', () => {
+      expect(callDisplayMs(0)).toBe(0);
+      expect(callDisplayMs(5000)).toBe(5000);
+    });
+
+    it('stretches the 8.4 s of compressed hold into a realistic 4:30', () => {
+      expect(callDisplayMs(20_600) - callDisplayMs(12_200)).toBe(270_000);
+    });
+
+    it('is 1:1 (offset only) once the call is live again', () => {
+      expect(callDisplayMs(31_000) - callDisplayMs(30_000)).toBe(1000);
+    });
+  });
+
+  describe('the ask card choice', () => {
+    function said(script: ReturnType<typeof buildPharmacyScript>): string[] {
+      return script.flatMap((se) => (se.event.t === 'agent.said' ? [se.event.text] : []));
+    }
+
+    it('share (the default): resolves "shared" and says the profile date of birth', () => {
+      const script = buildPharmacyScript({ kind: 'share' });
+      const view = script.reduce((v, se) => reduce(v, se.event), initialView);
+      expect(view.asks.find((a) => a.askId === ASK_ID)?.resolved).toBe('shared');
+      expect(said(script)).toContain('March 14, 1952.');
+      expect(view.summary?.bullets.join(' ')).toMatch(/Shared your date of birth/);
+    });
+
+    it('typed: resolves "typed" and says exactly the typed text, not the vault fact', () => {
+      const script = buildPharmacyScript({ kind: 'typed', text: 'The 14th of March, 1952' });
+      const view = script.reduce((v, se) => reduce(v, se.event), initialView);
+      expect(view.asks.find((a) => a.askId === ASK_ID)?.resolved).toBe('typed');
+      expect(said(script)).toContain('The 14th of March, 1952');
+      expect(said(script)).not.toContain('March 14, 1952.');
+      expect(view.summary?.bullets.join(' ')).toMatch(/Typed your date of birth/);
+    });
+
+    it('declined: resolves "declined", apologises, and Dana offers another way', () => {
+      const script = buildPharmacyScript({ kind: 'declined' });
+      const view = script.reduce((v, se) => reduce(v, se.event), initialView);
+      expect(view.asks.find((a) => a.askId === ASK_ID)?.resolved).toBe('declined');
+      expect(said(script)).toContain('Sorry, Maya would prefer not to share that.');
+      expect(said(script)).not.toContain('March 14, 1952.');
+      const d3 = script.find((se) => se.event.t === 'caption' && se.event.id === 'c-d3');
+      expect(d3 && d3.event.t === 'caption' ? d3.event.text : '').toMatch(
+        /^No problem, I can use her phone number\./,
+      );
+      expect(view.summary?.bullets.join(' ')).toMatch(/Declined to share your date of birth/);
+    });
+
+    it('every branch is the same length, with the ask resolved and a summary', () => {
+      const branches = [
+        { kind: 'share' } as const,
+        { kind: 'typed', text: 'x' } as const,
+        { kind: 'declined' } as const,
+      ];
+      for (const answer of branches) {
+        const script = buildPharmacyScript(answer);
+        expect(Math.max(...script.map((se) => se.t))).toBe(SAMPLE_TOTAL_MS);
+        const view = script.reduce((v, se) => reduce(v, se.event), initialView);
+        expect(view.ended).toBe(true);
+        expect(view.summary).toBeDefined();
+      }
+    });
   });
 });

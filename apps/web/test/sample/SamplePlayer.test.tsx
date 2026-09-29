@@ -90,14 +90,63 @@ describe('SamplePlayer', () => {
     expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument();
   });
 
-  it('clicking Share on the ask card advances the script past the wait', () => {
+  it('autoplays about 600 ms after mount, with no interaction', () => {
+    setup();
+    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument();
+    advance(600);
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    advance(1_000);
+    expect(Number(position().getAttribute('aria-valuenow'))).toBeGreaterThan(0);
+  });
+
+  it('clicking Share on the ask card resolves "shared" and says the profile fact', () => {
     setup();
     play();
-    // Just after the ask appears, well before its scripted 4.85 s resolution.
+    // Just after the ask appears, well before its scripted resolution.
     advance(45_000);
     const shareBtn = screen.getByRole('button', { name: /Share/ });
     fireEvent.click(shareBtn);
     expect(screen.getByText('March 14, 1952.')).toBeInTheDocument();
+    expect(transcript()).toMatch(/You shared/);
+  });
+
+  it('typing an answer on the ask card says exactly what was typed, and resolves "typed"', () => {
+    setup();
+    play();
+    advance(45_000);
+    fireEvent.click(screen.getByRole('button', { name: 'Type an answer' }));
+    const box = screen.getByRole('textbox', { name: /what carryover should say/i });
+    fireEvent.change(box, { target: { value: 'The 14th of March, 1952' } });
+    fireEvent.submit(box.closest('form') as HTMLFormElement);
+    expect(screen.getByText('The 14th of March, 1952')).toBeInTheDocument();
+    expect(screen.queryByText('March 14, 1952.')).not.toBeInTheDocument();
+  });
+
+  it('declining says sorry, resolves "declined", and Dana offers another way', () => {
+    setup();
+    play();
+    advance(45_000);
+    fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
+    expect(screen.getByText('Sorry, Maya would prefer not to share that.')).toBeInTheDocument();
+    expect(transcript()).toMatch(/You declined/);
+    // Past Dana's next line (D3), which opens with the alternate line B scripts for a decline.
+    advance(5_000);
+    expect(transcript()).toMatch(/No problem, I can use her phone number\./);
+    expect(screen.queryByText('March 14, 1952.')).not.toBeInTheDocument();
+  });
+
+  it('replaying after declining goes back to the default share branch', () => {
+    setup();
+    play();
+    advance(45_000);
+    fireEvent.click(screen.getByRole('button', { name: 'Decline' }));
+    // Still mid-call (not ended), so there's only one "Replay" button on screen.
+    advance(5_000);
+    replay();
+    advance(70_000);
+    // The caption log and the summary sheet's "said for you" list both show
+    // it once the call ends; either way, the fresh play was share, not decline.
+    expect(screen.getAllByText('March 14, 1952.').length).toBeGreaterThan(0);
   });
 
   it('typing in the composer shows the text said for you after a short delay', () => {

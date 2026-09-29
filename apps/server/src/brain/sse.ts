@@ -47,6 +47,7 @@ export class SseWriter {
   private roleSent = false;
   private closed = false;
   private wroteOutput = false;
+  private firstOutputMs: number | undefined;
 
   constructor(
     private readonly res: SseSink,
@@ -61,6 +62,16 @@ export class SseWriter {
   // True once any content or tool call reached the client.
   get hasOutput(): boolean {
     return this.wroteOutput;
+  }
+
+  // When the first content or tool-call chunk was written (epoch ms), for timing logs.
+  get firstOutputAt(): number | undefined {
+    return this.firstOutputMs;
+  }
+
+  private markOutput(): void {
+    if (!this.wroteOutput) this.firstOutputMs = Date.now();
+    this.wroteOutput = true;
   }
 
   private raw(s: string): void {
@@ -83,7 +94,7 @@ export class SseWriter {
     this.role();
     for (const piece of splitText(text)) {
       this.raw(chunk(this.id, this.model, { content: piece }));
-      this.wroteOutput = true;
+      this.markOutput();
     }
   }
 
@@ -91,7 +102,7 @@ export class SseWriter {
     if (this.closed || calls.length === 0) return;
     this.role();
     this.raw(chunk(this.id, this.model, { tool_calls: calls }));
-    this.wroteOutput = true;
+    this.markOutput();
   }
 
   keepalive(): void {

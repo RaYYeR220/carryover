@@ -309,4 +309,65 @@ describe('PoliteQueue', () => {
     q.tick(now + 100);
     expect(spoken).toEqual(['Typed while ringing.', 'Urgent too.']);
   });
+
+  it('"speak now" for text already waiting promotes it instead of queueing it twice', () => {
+    const h = harness();
+    const talk = themTalking(h);
+    talk();
+    const [nonce] = h.q.push('Her member ID is 4471 2290.');
+    h.advance(1000, talk);
+    expect(h.spoken).toEqual([]);
+
+    // The app re-sends the same words with urgent=true (whitespace may differ).
+    const again = h.q.push('  Her member ID is\n4471 2290. ', true);
+    expect(again).toEqual([nonce]);
+    expect(h.spoken).toEqual([{ nonce, text: 'Her member ID is 4471 2290.' }]);
+    expect(h.q.waiting).toBe(0);
+    expect(h.q.take(nonce as string)).toBe('Her member ID is 4471 2290.');
+
+    h.advance(10_000, talk);
+    expect(h.spoken).toHaveLength(1); // never spoken twice
+  });
+
+  it('"speak now" also releases what waits ahead of the promoted text, in order', () => {
+    const h = harness();
+    const talk = themTalking(h);
+    talk();
+    const [first] = h.q.push('First.');
+    const [second] = h.q.push('Second.');
+    h.advance(500, talk);
+
+    expect(h.q.push('Second.', true)).toEqual([second]);
+    h.advance(200, talk);
+    expect(h.spoken.map((x) => x.nonce)).toEqual([first, second]);
+  });
+
+  it('urgent text that is not waiting (or was already spoken) is queued as new', () => {
+    const h = harness();
+    const [spokenNonce] = h.q.push('Thanks.');
+    expect(h.spoken).toHaveLength(1);
+    const [again] = h.q.push('Thanks.', true);
+    expect(again).not.toBe(spokenNonce);
+    expect(h.spoken.map((x) => x.nonce)).toEqual([spokenNonce, again]);
+  });
+
+  it('requeueUnspoken puts text sent into a dropped socket back in front, in send order', () => {
+    const h = harness();
+    const talk = themTalking(h);
+    const [a] = h.q.push('Sent first.');
+    const [b] = h.q.push('Sent second.');
+    h.advance(100);
+    expect(h.spoken.map((x) => x.nonce)).toEqual([a, b]);
+    talk();
+    const [c] = h.q.push('Still waiting.');
+    const [taken] = [a];
+    h.q.take(taken as string); // the Brain pulled the first one before the drop
+
+    h.q.requeueUnspoken();
+    expect(h.q.waiting).toBe(2);
+    h.line.them = false;
+    h.advance(1000);
+    expect(h.spoken.map((x) => x.nonce)).toEqual([a, b, b, c]);
+    expect(h.q.take(b as string)).toBe('Sent second.');
+  });
 });

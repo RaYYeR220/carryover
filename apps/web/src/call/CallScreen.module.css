@@ -25,6 +25,16 @@
   min-width: 0;
 }
 
+/* The notice (e.g. "Sample call · scripted") and the caption log together
+   fill the grid's flexible row, so an optional notice never gets a whole
+   row (and thus most of the column's height) to itself. */
+.streamCol {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
 .dock {
   min-width: 0;
   padding: 14px 48px 18px;

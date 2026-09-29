@@ -97,6 +97,16 @@
   margin: 0 0 var(--s3);
 }
 
+.optional {
+  font-weight: 400;
+}
+
+/* The help text right above it (`.help`) carries no bottom margin, so this
+   label needs its own top margin or it sits flush against it. */
+.modeLbl {
+  margin-top: var(--s5);
+}
+
 .help {
   margin-top: var(--s2);
   font-size: 14px;

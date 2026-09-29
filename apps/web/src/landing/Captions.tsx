@@ -22,13 +22,18 @@ function cx(...xs: (string | false | undefined)[]): string {
 
 function renderText(text: CaptionText): ReactNode {
   if (typeof text === 'string') return text;
-  return text.map((w, i) => (
-    // biome-ignore lint/suspicious/noArrayIndexKey: words of one static line are positional
-    <Fragment key={i}>
-      {i > 0 ? ' ' : ''}
-      {w.cls ? <span className={s[w.cls]}>{w.text}</span> : w.text}
-    </Fragment>
-  ));
+  return text.map((w, i) => {
+    // Punctuation stays attached to the word before it, with no space and
+    // (for a low-confidence word) outside its dotted-underline span.
+    const spaced = i > 0 && !/^[.,!?;:]/.test(w.text);
+    return (
+      // biome-ignore lint/suspicious/noArrayIndexKey: words of one static line are positional
+      <Fragment key={i}>
+        {spaced ? ' ' : ''}
+        {w.cls ? <span className={s[w.cls]}>{w.text}</span> : w.text}
+      </Fragment>
+    );
+  });
 }
 
 const SendGlyph = () => (

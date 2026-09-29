@@ -355,6 +355,16 @@ const TWENTY_FOUR_SEVEN_RE = /(?<!\d[^\p{L}\d]{0,6})\b24\s?[/\s-]\s?7\b(?![^\p{L
 const MONTH_YEAR_RE = new RegExp(`\\b${MONTH},?\\s+(?:of\\s+|in\\s+)?${YEAR}`, 'gi');
 const MONTH_DAY_RE = new RegExp(`\\b${MONTH},?\\s+(?:the\\s+)?${DAY}${YEAR_TAIL}`, 'gi');
 const DAY_MONTH_RE = new RegExp(`\\b(?:the\\s+)?${DAY}\\s+(?:of\\s+)?${MONTH}${YEAR_TAIL}`, 'gi');
+// A day spoken as two lone spelled-out digits right after a month name ("March one four" ->
+// normalizeNumbers already turned "one"/"four" into separate single digits "1"/"4", still
+// space-separated because below100() never fuses two bare UNITS words together). Joins them
+// into one two-digit token ("14") so MONTH_DAY_RE's DAY group reads it as a single day
+// instead of splitting into a 1-day plus a stray "4". Scoped to immediately after a month
+// name so a digit-by-digit ID or number read elsewhere in the sentence is untouched.
+const MONTH_SPELLED_DAY_RE = new RegExp(
+  `\\b${MONTH}(,?\\s+(?:the\\s+)?)(\\d)\\s(\\d)\\b(?!\\s?\\d)`,
+  'gi',
+);
 
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g;
 const TLD = '(?:com|org|net|edu|gov|mil|io|co|us|uk|ca|au|de|info|biz|me|ai|app|dev|email|mail)';
@@ -430,6 +440,12 @@ function twoDigitYear(yy: number): number {
 function extractDates(text: string, facts: ExtractedFact[]): string {
   const push = (raw: string, norm: string) => facts.push({ kind: 'date', raw: raw.trim(), norm });
   let t = text.replace(TWENTY_FOUR_SEVEN_RE, MASK);
+  // "March 1 4" -> "March 14": see MONTH_SPELLED_DAY_RE. Must run before the day/month
+  // date regexes below so a spelled-digit-by-digit day is seen as one number, not two.
+  t = t.replace(
+    MONTH_SPELLED_DAY_RE,
+    (_m, mon: string, sep: string, d1: string, d2: string) => `${mon}${sep}${d1}${d2}`,
+  );
   t = t.replace(ISO_RE, (m, y: string, mo: string, d: string) => {
     const month = Number(mo);
     const day = Number(d);

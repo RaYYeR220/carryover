@@ -1,0 +1,37 @@
+{
+  "scenarioId": "lakeview-dental",
+  "autonomy": "auto",
+  "goal": "Move my cleaning to next week, afternoons only",
+  "user": { "name": "Maya Chen", "descriptor": "deaf" },
+  "consentedFacts": [
+    { "key": "full_name", "label": "Full name", "value": "Maya Chen" },
+    { "key": "dob", "label": "Date of birth", "value": "March 14, 1952" }
+  ],
+  "privateFacts": [],
+  "expect": {
+    "asks": [],
+    "newSpeaker": false,
+    "forbiddenInAgentSpeech": [],
+    "mustSayAfterAnswer": []
+  },
+  "userScript": [
+    {
+      "trigger": { "type": "ask", "onAsk": "tuesday" },
+      "answerWith": "No, mornings don't work for me -- do you have anything in the afternoon?",
+      "via": "answer",
+      "afterMs": 2000
+    },
+    {
+      "trigger": { "type": "ask", "onAsk": "wednesday" },
+      "answerWith": "Yes, Wednesday at 3:15 pm works.",
+      "via": "answer",
+      "afterMs": 2000
+    },
+    {
+      "trigger": { "type": "ask", "onAsk": "waitlist" },
+      "answerWith": "Yes, please put me on the waitlist for next week.",
+      "via": "answer",
+      "afterMs": 2000
+    }
+  ]
+}
