@@ -540,6 +540,29 @@ describe('CallSession no-viewer timeout', () => {
     await starting.catch(() => undefined);
   });
 
+  it('ends a call nobody ever watches 45 s after it connects', async () => {
+    const { session, unsubscribe } = await setup({ start: false });
+    unsubscribe(); // placed, but no app socket ever attaches
+    await session.start();
+    await advance(44_999);
+    expect(session.ended).toBe(false);
+    await advance(1);
+    expect(session.ended).toBe(true);
+  });
+
+  it('a polling client (touchViewer) keeps an unwatched call alive, window by window', async () => {
+    const { session, unsubscribe } = await setup({ start: false });
+    unsubscribe();
+    await session.start();
+    for (let i = 0; i < 3; i++) {
+      await advance(40_000);
+      session.touchViewer();
+    }
+    expect(session.ended).toBe(false);
+    await advance(45_000); // polling stops
+    expect(session.ended).toBe(true);
+  });
+
   it('a resubscribe inside the 45 s window cancels the timer and keeps the call alive', async () => {
     const { session, unsubscribe } = await setup();
     unsubscribe();

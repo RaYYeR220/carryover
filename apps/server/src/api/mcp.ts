@@ -104,6 +104,7 @@ function buildMcpServer(ctx: ServerContext, ip: string): McpServer {
     async ({ callId, appToken, askId, text }) => {
       const session = authorize(ctx, callId, appToken);
       if (!session) return fail('Call not found.');
+      session.touchViewer();
       session.handleCommand({ t: 'answer', askId, text });
       return ok({ ok: true });
     },
@@ -118,6 +119,7 @@ function buildMcpServer(ctx: ServerContext, ip: string): McpServer {
     async ({ callId, appToken, text }) => {
       const session = authorize(ctx, callId, appToken);
       if (!session) return fail('Call not found.');
+      session.touchViewer();
       session.handleCommand({ t: 'say', text });
       return ok({ ok: true });
     },

@@ -38,6 +38,8 @@ class PracticeLine implements LineHandle {
   private _status: LineStatus = 'waiting';
   private callerLabel: string | undefined;
   private ws: WebSocket | undefined;
+  // Set only when the line's time is up; a call that just ended leaves the line reusable.
+  private expired = false;
 
   constructor(code: string, createdAt: number) {
     this.code = code;
@@ -49,7 +51,7 @@ class PracticeLine implements LineHandle {
   }
 
   attachSocket(ws: WebSocket): void {
-    if (this._status === 'ended') {
+    if (this.expired) {
       sendJson(ws, { t: 'line.status', status: 'ended' });
       ws.close(4410, 'line expired');
       return;
@@ -97,6 +99,7 @@ class PracticeLine implements LineHandle {
   }
 
   expire(): void {
+    this.expired = true;
     this._status = 'ended';
     this.leg?.lineClosed();
     this.sendStatus();

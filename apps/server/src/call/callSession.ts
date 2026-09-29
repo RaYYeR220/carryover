@@ -357,6 +357,8 @@ export class CallSession {
 
       this.connectedAt = this.now();
       this.debug('call.connected', { call: this.id.slice(0, 8), leg: this.leg.kind });
+      // A call placed but never watched (no app socket, no polling) must not hold a slot.
+      this.armNoViewerTimer();
       this.line.force('connecting');
       if (this.leg.kind === 'line') {
         // The practice line is always a person; don't wait for a pickup heuristic.
@@ -485,6 +487,14 @@ export class CallSession {
     if (this.connectedAt === undefined && this.line.state !== 'ringing') return;
     this.clearNoViewerTimer();
     this.noViewerTimer = this.armTimer(() => void this.end('no-viewer'), NO_VIEWER_END_MS);
+  }
+
+  // A client that polls instead of subscribing (REST GET / MCP get_call, say, answer_ask)
+  // counts as watching for another window.
+  touchViewer(): void {
+    if (this.subscribers.size > 0 || this.ending) return;
+    this.clearNoViewerTimer();
+    this.armNoViewerTimer();
   }
 
   private clearNoViewerTimer(): void {

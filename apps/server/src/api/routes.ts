@@ -202,6 +202,7 @@ export function getCallState(
   token: string | undefined,
 ): CallStateView | undefined {
   const session = authorize(ctx, callId, token);
+  session?.touchViewer();
   return session ? callStateView(session) : undefined;
 }
 

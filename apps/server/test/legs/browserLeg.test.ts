@@ -130,6 +130,19 @@ describe('BrowserLeg', () => {
     expect(line.status).toBe('waiting');
   });
 
+  it('a page reloaded right after a hang-up reattaches instead of being told the line expired', async () => {
+    const { page, line } = await answered();
+    page.pageJson({ t: 'line.hangup' });
+    expect(line.status).toBe('ended');
+    const reloaded = new FakeSocket();
+    line.attachSocket(reloaded.asWs());
+    expect(reloaded.closed).toBeUndefined();
+    expect(statuses(reloaded).at(-1)).toBe('ended');
+    await vi.advanceTimersByTimeAsync(CALL_ENDED_DISPLAY_MS);
+    expect(statuses(reloaded).at(-1)).toBe('waiting');
+    expect(line.status).toBe('waiting');
+  });
+
   it('no answer within 60 s ends the call with no-answer and rejects start()', async () => {
     const { leg, line, ended } = setup();
     const started = leg.start();
