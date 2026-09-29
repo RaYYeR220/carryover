@@ -13,7 +13,9 @@ describe('loadConfig', () => {
     const cfg = loadConfig(REQUIRED_ENV);
     expect(cfg.port).toBe(8787);
     expect(cfg.llmProvider).toBe('venice');
-    expect(cfg.llmModel).toBe('gemini-3-8-flash');
+    expect(cfg.llmModel).toBe('gemini-3-5-flash-lite');
+    expect(cfg.debug).toBe(false);
+    expect(cfg.llmParams).toBeUndefined();
     expect(cfg.aaiKey).toBe('aai-key');
     expect(cfg.veniceKey).toBe('venice-key');
     expect(cfg.publicBaseUrl).toBe('https://example.com');
@@ -32,6 +34,18 @@ describe('loadConfig', () => {
   it('lets LLM_MODEL override the provider default', () => {
     const cfg = loadConfig({ ...REQUIRED_ENV, LLM_MODEL: 'custom-model' });
     expect(cfg.llmModel).toBe('custom-model');
+  });
+
+  it('LOG_LEVEL=debug turns on timing lines', () => {
+    expect(loadConfig({ ...REQUIRED_ENV, LOG_LEVEL: 'debug' }).debug).toBe(true);
+    expect(loadConfig({ ...REQUIRED_ENV, LOG_LEVEL: 'info' }).debug).toBe(false);
+  });
+
+  it('LLM_PARAMS is a JSON object of extra LLM request params', () => {
+    const cfg = loadConfig({ ...REQUIRED_ENV, LLM_PARAMS: '{"reasoning":{"enabled":false}}' });
+    expect(cfg.llmParams).toEqual({ reasoning: { enabled: false } });
+    expect(() => loadConfig({ ...REQUIRED_ENV, LLM_PARAMS: '[1]' })).toThrow(/LLM_PARAMS/);
+    expect(() => loadConfig({ ...REQUIRED_ENV, LLM_PARAMS: '{oops' })).toThrow(/LLM_PARAMS/);
   });
 
   it('coerces PORT from a string', () => {

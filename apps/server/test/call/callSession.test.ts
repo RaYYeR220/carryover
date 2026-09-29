@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptionTurn } from '../../src/aai/captions.js';
 import { dtmfMulaw } from '../../src/audio/dtmf.js';
 import { holdMusicMulaw } from '../../src/audio/holdMusic.js';
+import { encodeMulaw } from '../../src/audio/mulaw.js';
 import { checkSentence } from '../../src/brain/factGate.js';
 import { RELAY_TOOLS } from '../../src/brain/policy.js';
 import { CALL_TAG_RE } from '../../src/brain/requestParse.js';
@@ -259,6 +260,145 @@ describe('CallSession start', () => {
   });
 });
 
+describe('CallSession voice agent resume', () => {
+  const frame = () => Buffer.alloc(800, 0xff);
+  const errors = (events: AppEvent[]) => all(events, 'error').map((e) => e.message);
+
+  it('resumes the session after an abnormal close (1006) and the call carries on', async () => {
+    const { session, leg, va, cap, events } = await setup();
+    const tagged = { system_prompt: `[[carryover-call:${session.id}]] relay session` };
+    leg.emitAudio(frame());
+    expect(va.audio).toHaveLength(1);
+
+    va.close(1006, '');
+    expect(errors(events)).toEqual(['Reconnecting voice…']);
+    // While reconnecting the other party's audio is dropped, not buffered, for the Voice
+    // Agent; the captions keep getting it.
+    leg.emitAudio(frame());
+    leg.emitAudio(frame());
+    expect(va.audio).toHaveLength(1);
+    expect(cap.audio).toHaveLength(3);
+
+    await advance(499);
+    expect(va.resumeCalls).toBe(0);
+    await advance(1);
+    expect(va.resumeCalls).toBe(1);
+    expect(errors(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
+    // The resumed session is tagged again (session.ready → call tag) and hears the line.
+    expect(va.updates).toEqual([tagged, tagged]);
+    leg.emitAudio(frame());
+    expect(va.audio).toHaveLength(2);
+
+    expect(session.lineState).not.toBe('ended');
+    expect(va.endCalls).toBe(0);
+    expect(leg.hangups).toEqual([]);
+    expect(alertKinds(events)).not.toContain('call-ended');
+  });
+
+  it('retries once after 2 s when the first resume fails, then carries on', async () => {
+    const { session, va, events } = await setup();
+    va.resumeOutcomes = ['reject', 'ready'];
+    va.close(1006, '');
+    await advance(500);
+    expect(va.resumeCalls).toBe(1);
+    // The refused socket closing is that attempt's failure, not a new drop.
+    expect(errors(events)).toEqual(['Reconnecting voice…']);
+    await advance(1999);
+    expect(va.resumeCalls).toBe(1);
+    await advance(1);
+    expect(va.resumeCalls).toBe(2);
+    expect(errors(events)).toEqual(['Reconnecting voice…', 'Voice reconnected.']);
+    expect(session.lineState).not.toBe('ended');
+  });
+
+  it('a clean close (1000) or a session the server ended is not resumed', async () => {
+    const a = await setup();
+    a.va.close(1000, 'bye');
+    await advance(0);
+    expect(a.va.resumeCalls).toBe(0);
+    expect(a.session.lineState).toBe('ended');
+
+    const b = await setup();
+    b.va.serverEnded = true;
+    b.va.close(1006, '');
+    await advance(3000);
+    expect(b.va.resumeCalls).toBe(0);
+    expect(b.session.lineState).toBe('ended');
+  });
+
+  it('hanging up while reconnecting stops the attempts and leaves no timers behind', async () => {
+    const { session, va } = await setup();
+    va.resumeOutcomes = ['hang'];
+    va.close(1006, '');
+    await advance(500);
+    expect(va.resumeCalls).toBe(1);
+    session.handleCommand({ t: 'hangup' });
+    await advance(0);
+    expect(va.endCalls).toBe(1);
+    await advance(5000);
+    expect(va.resumeCalls).toBe(1);
+    await session.finished;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('hanging up inside the 500 ms backoff settles the resume wait at once and leaves no timers', async () => {
+    const { session, va } = await setup();
+    const spied = vi.spyOn(session as unknown as { resumeVa: () => Promise<void> }, 'resumeVa');
+    va.close(1006, '');
+    expect(spied).toHaveBeenCalledTimes(1);
+    let returned = false;
+    const attempt = spied.mock.results[0]?.value as Promise<void> | undefined;
+    expect(attempt).toBeInstanceOf(Promise);
+    void attempt?.then(() => {
+      returned = true;
+    });
+    await advance(200); // inside the first 500 ms backoff
+    session.handleCommand({ t: 'hangup' });
+    await advance(0);
+    expect(returned).toBe(true);
+    await session.finished;
+    expect(va.resumeCalls).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('typed text waits during the reconnect, and text lost with the old socket is re-sent', async () => {
+    const { session, va } = await setup();
+    session.handleCommand({ t: 'say', text: 'Lost with the socket.' });
+    expect(va.replyCreates).toHaveLength(1);
+    const lost = va.nonces[0] as string;
+
+    va.close(1006, '');
+    session.handleCommand({ t: 'say', text: 'Typed while reconnecting.' });
+    await advance(400);
+    expect(va.replyCreates).toHaveLength(1);
+
+    await advance(100); // resumed
+    expect(va.nonces).toEqual([lost, lost]);
+    expect(session.brainView().takeNonce(lost)).toBe('Lost with the socket.');
+    va.emit({ type: 'reply.started', reply_id: 'r1' });
+    va.emit({ type: 'reply.done', reply_id: 'r1', status: 'completed' });
+    await advance(100);
+    expect(va.replyCreates).toHaveLength(3);
+    expect(session.brainView().takeNonce(va.nonces[2] as string)).toBe('Typed while reconnecting.');
+  });
+
+  it('a reply in flight when the socket drops is treated as over', async () => {
+    const { session, va } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'r1' });
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'r1',
+      data: Buffer.alloc(400, 0xff).toString('base64'),
+    });
+    va.close(1006, '');
+    await advance(500);
+    // Nothing is left thinking the agent is mid-reply: typed text goes out.
+    session.handleCommand({ t: 'say', text: 'Hello again.' });
+    await advance(300);
+    expect(va.replyCreates.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('CallSession exit paths (Review Focus 1)', () => {
   it('disposes AAI sessions when the leg drops', async () => {
     const { session, leg, va, cap, events } = await setup();
@@ -287,13 +427,18 @@ describe('CallSession exit paths (Review Focus 1)', () => {
     expect(all(events, 'summary')).toHaveLength(1);
   });
 
-  it('the Voice Agent socket dropping ends the whole call', async () => {
-    const { session, leg, va, cap } = await setup();
+  it('the Voice Agent socket dropping ends the whole call when the session cannot be resumed', async () => {
+    const { session, leg, va, cap, events } = await setup();
+    va.resumeOutcomes = ['reject', 'reject'];
     va.close(1006, 'abnormal');
-    await advance(0);
+    await advance(2500);
+    expect(va.resumeCalls).toBe(2);
     expect(cap.closeCalls).toBe(1);
     expect(leg.hangups).toHaveLength(1);
     expect(session.lineState).toBe('ended');
+    expect(all(events, 'alert').find((a) => a.kind === 'call-ended')?.message).toBe(
+      'Call ended: the voice connection dropped.',
+    );
   });
 
   it('hard-stops at MAX_CALL_MS', async () => {
@@ -374,9 +519,12 @@ describe('CallSession scripted pharmacy call', () => {
     const pickup = all(events, 'alert').find((a) => a.kind === 'human-picked-up');
     expect(pickup?.message).toBe('A person picked up — This is Dana, how can I help?');
 
-    // Polite: Dana just finished; the disclosure waits for a short pause.
+    // Polite: the line was loud a moment ago (the last hold-music frame, as far as the level
+    // can tell); the disclosure waits until it has been quiet for 1.5 s.
     expect(va.replyCreates).toEqual([]);
-    await advance(1000);
+    await advance(1300);
+    expect(va.replyCreates).toEqual([]);
+    await advance(300);
     expect(va.replyCreates).toHaveLength(1);
     const nonce = va.nonces[0] ?? '';
     expect(va.replyCreates[0]).toBe(`RELAY_UTTERANCE:${nonce}`);
@@ -417,6 +565,235 @@ describe('CallSession scripted pharmacy call', () => {
     cap.final(0, 'Please leave a message after the tone.', 'A');
     expect(session.lineState).toBe('voicemail');
     expect(alertKinds(events)).toContain('voicemail');
+  });
+});
+
+describe('CallSession disclosure timing (live event ordering)', () => {
+  // A 100 ms μ-law frame of "speech" (a 300 Hz tone around -17 dBFS) or of line silence.
+  const loud = (() => {
+    const pcm = new Int16Array(800);
+    for (let i = 0; i < pcm.length; i++)
+      pcm[i] = Math.round(6000 * Math.sin((2 * Math.PI * 300 * i) / 8000));
+    return encodeMulaw(pcm);
+  })();
+  const quiet = Buffer.alloc(800, 0xff);
+
+  type Step = [at: number, act: (t: Awaited<ReturnType<typeof setup>>) => void];
+
+  // Replays a timeline on the real 100 ms clock: one leg frame per tick (loud inside the
+  // `speech` spans), the scripted caption / Voice Agent events at their times. Returns
+  // when the first reply.create went out, relative to the start.
+  async function replay(
+    t: Awaited<ReturnType<typeof setup>>,
+    speech: [number, number][],
+    steps: Step[],
+    until: number,
+  ) {
+    const pending = [...steps].sort((a, b) => a[0] - b[0]);
+    let sentAt: number | undefined;
+    for (let ms = 0; ms <= until; ms += 100) {
+      while (pending.length > 0 && (pending[0] as Step)[0] <= ms) (pending.shift() as Step)[1](t);
+      const talking = speech.some(([from, to]) => ms >= from && ms < to);
+      t.leg.emitAudio(talking ? loud : quiet);
+      await advance(100);
+      if (sentAt === undefined && t.va.replyCreates.length > 0) sentAt = ms + 100;
+    }
+    return sentAt;
+  }
+
+  async function onHold() {
+    const t = await setup();
+    t.cap.final(0, 'For prescription refills, press 2.', 'A');
+    const music = holdMusicMulaw(8);
+    for (let i = 0; i + 800 <= music.length; i += 800) {
+      t.leg.emitAudio(music.subarray(i, i + 800));
+      await advance(100);
+    }
+    expect(t.session.lineState).toBe('hold');
+    return t;
+  }
+
+  // Riverside, live run: Dana's greeting is two sentences with a 1.2 s pause between
+  // them; the pickup is only recognised on the first sentence's final caption (1.1 s into
+  // that pause). Caption partials come ~1.3 s apart and the Voice Agent's speech events
+  // trail her audio by 1.3-1.6 s. AAI's reply to her turn (silent: the disclosure is
+  // queued) completes ~1.3 s after its last speech.stopped. Times in ms from her first word.
+  const commitAt = (secondEnds: number) => secondEnds + 1580 + 1300;
+  const pickupSteps = (secondEnds: number, settles = true): Step[] => [
+    [460, ({ cap }) => cap.partial(4, 'Riverside', 'B')],
+    [1390, ({ va }) => va.emit({ type: 'input.speech.started' })],
+    [1790, ({ cap }) => cap.partial(4, 'Riverside Pharmacy, this is', 'B')],
+    [3220, ({ cap }) => cap.final(4, 'Riverside Pharmacy, this is Dana speaking.', 'B')],
+    [
+      3680,
+      ({ va }) => {
+        va.emit({ type: 'input.speech.stopped' });
+        va.emit({ type: 'transcript.user', text: 'Riverside Pharmacy, this is Dana speaking.' });
+        va.emit({ type: 'reply.started', reply_id: 'auto1' }); // silent auto-reply
+      },
+    ],
+    [
+      3880,
+      ({ cap }) => {
+        cap.speechStarted();
+        cap.partial(5, 'How can I', 'B');
+      },
+    ],
+    [4680, ({ va }) => va.emit({ type: 'input.speech.started' })],
+    ...Array.from(
+      { length: Math.max(0, Math.floor((secondEnds - 3880) / 1300)) },
+      (_, i): Step => [
+        3880 + 1300 * (i + 1),
+        ({ cap }) => cap.partial(5, 'How can I help you today', 'B'),
+      ],
+    ),
+    [secondEnds + 1000, ({ cap }) => cap.final(5, 'How can I help you today?', 'B')],
+    [secondEnds + 1580, ({ va }) => va.emit({ type: 'input.speech.stopped' })],
+    ...(settles
+      ? [
+          [
+            commitAt(secondEnds),
+            ({ va }) => va.emit({ type: 'reply.done', reply_id: 'auto1', status: 'completed' }),
+          ] as Step,
+        ]
+      : []),
+  ];
+
+  it('waits for her whole greeting and for AAI to settle her turn, then goes at once', async () => {
+    const t = await onHold();
+    const secondEnds = 4640;
+    const sentAt = await replay(
+      t,
+      [
+        [0, 2120],
+        [3330, secondEnds],
+      ],
+      pickupSteps(secondEnds),
+      9000,
+    );
+    expect(t.session.lineState).toBe('human');
+    expect(sentAt).toBeDefined();
+    // Never over her (the old gate sent at 4600, 40 ms before her last word), never into
+    // AAI's still-open reply to her turn (live: merged there, the disclosure was cut to
+    // half a second), and right after that reply completes.
+    expect(sentAt as number).toBeGreaterThanOrEqual(secondEnds);
+    expect(sentAt as number).toBeGreaterThan(commitAt(secondEnds));
+    expect((sentAt as number) - commitAt(secondEnds)).toBeLessThanOrEqual(200);
+    expect(t.session.brainView().takeNonce(t.va.nonces[0] as string)).toBe(
+      disclosureText('Maya', 'deaf'),
+    );
+  });
+
+  it('never starts in the gaps between caption partials while she is still talking', async () => {
+    // Same pickup, but her second sentence runs 4.5 s: partials 1.3 s apart used to
+    // read as a pause (the "disclosure while the rep was mid-sentence" of the first live run).
+    const t = await onHold();
+    const secondEnds = 7830;
+    const sentAt = await replay(
+      t,
+      [
+        [0, 2120],
+        [3330, secondEnds],
+      ],
+      pickupSteps(secondEnds),
+      13_000,
+    );
+    expect(sentAt).toBeDefined();
+    expect(sentAt as number).toBeGreaterThanOrEqual(secondEnds);
+    expect((sentAt as number) - commitAt(secondEnds)).toBeLessThanOrEqual(200);
+  });
+
+  it("waits for AAI's own end of their turn even when the level has been quiet 1.5 s (northstar)", async () => {
+    // Live (northstar): Marcus's greeting ended at 5240; the level was quiet for 1.5 s at
+    // 6740, but AAI's VAD only reported speech.stopped at 6900 and then committed his turn.
+    // The disclosure sent at 6740 was ended by that commit with 0 ms of audio.
+    const t = await onHold();
+    const vaStopped = 6900;
+    const commit = vaStopped + 1300;
+    const steps: Step[] = [
+      [270, ({ cap }) => cap.speechStarted()],
+      [300, ({ cap }) => cap.partial(3, 'Thanks for holding.', 'B')],
+      [1200, ({ va }) => va.emit({ type: 'input.speech.started' })],
+      [1600, ({ cap }) => cap.partial(3, 'Thanks for holding. This is Marcus', 'B')],
+      [2900, ({ cap }) => cap.partial(3, 'Thanks for holding. This is Marcus with Northstar', 'B')],
+      [
+        4340,
+        ({ cap }) =>
+          cap.final(
+            3,
+            'Thanks for holding. This is Marcus with Northstar Bank Card Services.',
+            'B',
+          ),
+      ],
+      [5190, ({ cap }) => cap.speechStarted()],
+      [5300, ({ cap }) => cap.partial(4, 'How can I help', 'B')],
+      [6330, ({ cap }) => cap.final(4, 'How can I help you today?', 'B')],
+      [
+        vaStopped,
+        ({ va }) => {
+          va.emit({ type: 'input.speech.stopped' });
+          va.emit({ type: 'transcript.user', text: 'Thanks for holding. This is Marcus.' });
+          va.emit({ type: 'reply.started', reply_id: 'turn' });
+        },
+      ],
+      [commit, ({ va }) => va.emit({ type: 'reply.done', reply_id: 'turn', status: 'completed' })],
+    ];
+    const sentAt = await replay(
+      t,
+      [
+        [0, 3120],
+        [4230, 5240],
+      ],
+      steps,
+      10_000,
+    );
+    expect(t.session.lineState).toBe('human');
+    expect(sentAt).toBeDefined();
+    expect(sentAt as number).toBeGreaterThan(commit);
+    expect((sentAt as number) - commit).toBeLessThanOrEqual(200);
+  });
+
+  it('typed text never starts over someone who just began talking, before any caption or VA event', async () => {
+    // Captions need ~0.4 s for a first partial and AAI's VAD reported speech 0.4-1.4 s
+    // after it began (live); only the level knows at once.
+    const t = await setup();
+    t.cap.final(0, 'Okay, one moment please.', 'A');
+    const steps: Step[] = [
+      [2200, ({ session }) => session.handleCommand({ t: 'say', text: 'Take your time.' })],
+      [2500, ({ cap }) => cap.partial(1, 'So I just', 'A')],
+      [3300, ({ va }) => va.emit({ type: 'input.speech.started' })],
+      [3800, ({ cap }) => cap.partial(1, 'So I just pulled up her file and', 'A')],
+      [5900, ({ cap }) => cap.final(1, 'So I just pulled up her file and it looks fine.', 'A')],
+      [
+        5800,
+        ({ va }) => {
+          va.emit({ type: 'input.speech.stopped' });
+          va.emit({ type: 'reply.started', reply_id: 'turn' });
+        },
+      ],
+      [7100, ({ va }) => va.emit({ type: 'reply.done', reply_id: 'turn', status: 'completed' })],
+    ];
+    const sentAt = await replay(t, [[2000, 5000]], steps, 9000);
+    expect(sentAt).toBeDefined();
+    expect(sentAt as number).toBeGreaterThanOrEqual(5000);
+  });
+
+  it('goes 3 s after her last speech event when AAI never completes its silent reply', async () => {
+    const t = await onHold();
+    const secondEnds = 4640;
+    const sentAt = await replay(
+      t,
+      [
+        [0, 2120],
+        [3330, secondEnds],
+      ],
+      pickupSteps(secondEnds, false),
+      10_000,
+    );
+    const lastVaEvent = secondEnds + 1580;
+    expect(sentAt).toBeDefined();
+    expect(sentAt as number).toBeGreaterThanOrEqual(lastVaEvent + 3000);
+    expect(sentAt as number).toBeLessThanOrEqual(lastVaEvent + 3100);
   });
 });
 
@@ -485,9 +862,83 @@ describe('CallSession polite relay', () => {
     await advance(2000);
     expect(va.replyCreates).toHaveLength(1);
     va.emit({ type: 'reply.started', reply_id: 'r1' });
+    session.brainView().takeNonce(va.nonces[0] as string);
     va.emit({ type: 'reply.done', reply_id: 'r1', status: 'completed' });
     await advance(100);
     expect(va.replyCreates).toHaveLength(2);
+  });
+
+  it('a reply AAI starts on its own right after our reply.create does not end the ack wait', async () => {
+    // Live (northstar): reply.create, then a post-tool reply of AAI's own started and
+    // completed silently, then the reply that took our nonce. An urgent answer sent in
+    // that gap was sent over ours and cut it.
+    const { session, va } = await setup();
+    session.handleCommand({ t: 'say', text: 'My member ID is 4471 2290.' });
+    expect(va.replyCreates).toHaveLength(1);
+    va.emit({ type: 'reply.started', reply_id: 'posttool' });
+    va.emit({ type: 'reply.done', reply_id: 'posttool', status: 'completed' });
+    await advance(100);
+    va.emit({ type: 'reply.started', reply_id: 'mine' });
+    expect(session.brainView().takeNonce(va.nonces[0] as string)).toBe(
+      'My member ID is 4471 2290.',
+    );
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'mine',
+      data: Buffer.alloc(1600, 0x55).toString('base64'),
+    });
+    await advance(100);
+    session.handleCommand({ t: 'say', text: 'Ready when you are.', urgent: true });
+    await advance(100);
+    expect(va.replyCreates).toHaveLength(1); // never over our own utterance
+    va.emit({ type: 'reply.done', reply_id: 'mine', status: 'completed' });
+    await advance(500);
+    expect(va.replyCreates).toHaveLength(2);
+  });
+
+  it('one ask card per question: the same field asked again through the other tool is covered', async () => {
+    const { va, events } = await setup();
+    va.emit({
+      type: 'tool.call',
+      call_id: 's1',
+      name: 'share_fact',
+      arguments: { field: 'member_id' },
+    });
+    va.emit({
+      type: 'tool.call',
+      call_id: 'a1',
+      name: 'ask_user',
+      arguments: { question: 'What is your 8-digit member ID?', field: 'member_id' },
+    });
+    va.emit({
+      type: 'tool.call',
+      call_id: 's2',
+      name: 'share_fact',
+      arguments: { field: 'member_id' },
+    });
+    va.emit({
+      type: 'tool.call',
+      call_id: 'a2',
+      name: 'ask_user',
+      arguments: { question: 'Phone number?' },
+    });
+    va.emit({
+      type: 'tool.call',
+      call_id: 'a3',
+      name: 'ask_user',
+      arguments: { question: 'phone number' },
+    });
+    expect(all(events, 'ask').map((a) => a.question)).toEqual([
+      "They're asking for your member ID.",
+      'Phone number?',
+    ]);
+    expect(va.toolResults.map((r) => (r.result as { status?: string }).status)).toEqual([
+      'not_shared_asking_user',
+      'already_asked_user',
+      'already_asked_user',
+      'asked_user',
+      'already_asked_user',
+    ]);
   });
 
   it('a lost reply.create does not block the queue forever', async () => {
@@ -806,13 +1257,73 @@ describe('CallSession tools', () => {
     expect(leg.hangups).toEqual(['agent-ended']);
   });
 
-  it('end_call in an interrupted reply is cancelled', async () => {
-    const { session, va } = await setup();
+  it('end_call in an interrupted reply still ends the call, after a 1.5 s grace', async () => {
+    const { session, va, leg } = await setup();
     va.emit({ type: 'reply.started', reply_id: 'r1' });
     va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
     va.emit({ type: 'reply.done', reply_id: 'r1', status: 'interrupted' });
-    await advance(3000);
+    await advance(1300);
     expect(session.lineState).not.toBe('ended');
+    await advance(300);
+    expect(session.lineState).toBe('ended');
+    expect(leg.hangups).toEqual(['agent-ended']);
+  });
+
+  it('a goodbye talked over by "okay, bye!" still hangs up within ~2 s (Brain goodbye + end_call)', async () => {
+    // The Brain says "Thank you, goodbye." before end_call; the other party answers over
+    // it, AAI reports the reply interrupted. Before: end_call was dropped and the call sat
+    // open until the 5-minute limit.
+    const { session, va, leg, events } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'bye' });
+    va.emit({
+      type: 'reply.audio',
+      reply_id: 'bye',
+      data: Buffer.alloc(8000, 0x55).toString('base64'),
+    });
+    va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
+    await advance(400); // part of the goodbye plays
+    va.emit({ type: 'input.speech.started' });
+    va.emit({ type: 'transcript.agent', reply_id: 'bye', text: 'Thank you,', interrupted: true });
+    va.emit({ type: 'reply.done', reply_id: 'bye', status: 'interrupted' });
+    const cutAt = Date.now();
+    let endedAfter: number | undefined;
+    for (let t = 0; t < 5000 && endedAfter === undefined; t += 100) {
+      await advance(100);
+      if (session.lineState === 'ended') endedAfter = Date.now() - cutAt;
+    }
+    expect(endedAfter).toBeDefined();
+    expect(endedAfter as number).toBeLessThanOrEqual(2000);
+    expect(leg.hangups).toEqual(['agent-ended']);
+    expect(all(events, 'alert').find((a) => a.kind === 'call-ended')?.message).toBe(
+      'Call ended: the conversation is finished.',
+    );
+    // The interrupted reply's tool result is never sent (AAI docs), the hang-up still is.
+    expect(va.toolResults).toEqual([]);
+  });
+
+  it('a second end_call in a later reply never pushes back the armed hang-up (still ended by 2 s)', async () => {
+    const { session, va, leg } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'bye' });
+    va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
+    va.emit({ type: 'reply.done', reply_id: 'bye', status: 'interrupted' }); // grace armed
+    await advance(200);
+    // The other party's "okay, bye!" starts a new reply, and the model ends the call again.
+    va.emit({ type: 'reply.started', reply_id: 'again' });
+    va.emit({ type: 'tool.call', call_id: 'e2', name: 'end_call', arguments: { reason: 'bye' } });
+    await advance(1800);
+    expect(session.lineState).toBe('ended');
+    expect(leg.hangups).toEqual(['agent-ended']);
+  });
+
+  it('a stray end_call after the hang-up was armed keeps the armed deadline', async () => {
+    const { session, va } = await setup();
+    va.emit({ type: 'reply.started', reply_id: 'slow' });
+    va.emit({ type: 'tool.call', call_id: 'e1', name: 'end_call', arguments: { reason: 'done' } });
+    va.emit({ type: 'reply.done', reply_id: 'slow', status: 'completed' });
+    // Already armed by reply.done; a stray end_call outside any reply keeps that deadline.
+    va.emit({ type: 'tool.call', call_id: 'e2', name: 'end_call', arguments: { reason: 'done' } });
+    await advance(200);
+    expect(session.lineState).toBe('ended');
   });
 
   it('ask cards expire after 90 s', async () => {
@@ -1002,7 +1513,7 @@ describe('CallSession hardening (review round 1)', () => {
     expect(session.brainView().onToolLoopDepth()).toBe(0);
   });
 
-  it('typed text gets out within 8.5 s on a chatty line (3 s bursts, 1 s pauses, silent auto-replies)', async () => {
+  it('typed text gets out within 12.5 s on a chatty line (3 s bursts, 1 s pauses, silent auto-replies)', async () => {
     const { session, va, cap } = await setup();
     const plan = new Map<number, (() => void)[]>();
     const at = (t: number, fn: () => void) => plan.set(t, [...(plan.get(t) ?? []), fn]);
@@ -1032,18 +1543,25 @@ describe('CallSession hardening (review round 1)', () => {
       if (va.replyCreates.length > 0) spokenAt = t + 100;
     }
     expect(spokenAt).toBeDefined();
-    expect((spokenAt ?? Number.POSITIVE_INFINITY) - sayAt).toBeLessThanOrEqual(8500);
+    // 8 s force-send, plus at most 4 s while AAI is mid-turn: here it always is (its VAD
+    // hears a burst, or its reply to the last one is open), and text sent into that is cut.
+    expect((spokenAt ?? Number.POSITIVE_INFINITY) - sayAt).toBeLessThanOrEqual(12_500);
   });
 
-  it('a silent auto-reply in flight does not hold typed text; one producing audio does', async () => {
+  it('a silent auto-reply holds typed text until it completes (at most 3 s); one with audio until done', async () => {
     const { session, va, cap } = await setup();
     cap.final(0, 'Okay, go ahead.', 'A');
     va.emit({ type: 'reply.started', reply_id: 'auto0' }); // the Brain will answer nothing
     await advance(800);
     session.handleCommand({ t: 'say', text: 'First.' });
-    expect(va.replyCreates).toHaveLength(1);
+    // Not into AAI's still-open reply to their turn: it would be cut off when AAI commits it.
+    await advance(1000);
+    expect(va.replyCreates).toHaveLength(0);
     va.emit({ type: 'reply.done', reply_id: 'auto0', status: 'completed' });
+    await advance(100);
+    expect(va.replyCreates).toHaveLength(1);
     va.emit({ type: 'reply.started', reply_id: 'mine' });
+    session.brainView().takeNonce(va.nonces[0] as string);
     va.emit({ type: 'reply.done', reply_id: 'mine', status: 'completed' });
 
     va.emit({ type: 'reply.started', reply_id: 'auto1' });

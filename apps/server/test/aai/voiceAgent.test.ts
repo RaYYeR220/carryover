@@ -306,6 +306,85 @@ describe('VoiceAgentSession', () => {
   });
 });
 
+describe('VoiceAgentSession.resume', () => {
+  // Plays AAI: session.update → session.ready s1; session.resume of s1 → session.ready s1,
+  // anything else → session.error session_not_found and a 1008 close.
+  async function resumableServer(opts: { refuse?: boolean } = {}) {
+    const sockets: import('ws').WebSocket[] = [];
+    const server = await startFakeServer();
+    server.wss.on('connection', (ws) => {
+      sockets.push(ws);
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (msg.type === 'session.update') {
+          ws.send(JSON.stringify({ type: 'session.ready', session_id: 's1' }));
+        }
+        if (msg.type === 'session.resume') {
+          if (!opts.refuse && msg.session_id === 's1') {
+            ws.send(JSON.stringify({ type: 'session.ready', session_id: 's1' }));
+          } else {
+            ws.send(JSON.stringify({ type: 'session.error', code: 'session_not_found' }));
+            ws.close(1008, 'session_not_found');
+          }
+        }
+      });
+    });
+    return { server, sockets };
+  }
+
+  it('reconnects a dropped socket with session.resume and the previous session_id', async () => {
+    const { server, sockets } = await resumableServer();
+    const { session, events, closes } = readySession(server);
+    await session.connect();
+    expect(session.resumable).toBe(true);
+
+    sockets[0]?.terminate(); // the network drops: no close frame, the client sees 1006
+    await waitFor(() => closes.length === 1);
+    expect(closes[0]?.code).toBe(1006);
+
+    await session.resume();
+    expect(server.received.at(-1)).toEqual({ type: 'session.resume', session_id: 's1' });
+    expect(sockets).toHaveLength(2);
+    expect(events.filter((e) => e.type === 'session.ready')).toHaveLength(2);
+
+    // The new socket carries the session: audio and control messages go through it.
+    session.replyCreate('RELAY_UTTERANCE:abc12345');
+    await waitFor(() => server.received.some((m) => m.type === 'reply.create'));
+  });
+
+  it('rejects promptly when the server refuses the resume (session expired)', async () => {
+    const { server, sockets } = await resumableServer({ refuse: true });
+    const { session, closes } = readySession(server, { connectTimeoutMs: 5000 });
+    await session.connect();
+    sockets[0]?.terminate();
+    await waitFor(() => closes.length === 1);
+
+    const started = Date.now();
+    await expect(session.resume()).rejects.toThrow(/closed \(1008\)/);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('is not resumable after our end() or after the server ended the session', async () => {
+    const ended = await resumableServer();
+    const a = readySession(ended.server);
+    await a.session.connect();
+    await a.session.end();
+    expect(a.session.resumable).toBe(false);
+    await expect(a.session.resume()).rejects.toThrow(/ended/);
+
+    const byServer = await startFakeServer((msg, send) => {
+      if (msg.type === 'session.update') {
+        send({ type: 'session.ready', session_id: 's2' });
+        send({ type: 'session.ended', session_duration_seconds: 1 });
+      }
+    });
+    const b = readySession(byServer);
+    await b.session.connect();
+    await waitFor(() => b.events.some((e) => e.type === 'session.ended'));
+    expect(b.session.resumable).toBe(false);
+  });
+});
+
 async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
   while (!pred()) {

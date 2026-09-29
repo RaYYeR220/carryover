@@ -13,6 +13,8 @@ export interface ParsedBrainRequest {
   lastToolName?: string;
   history: ChatMessage[] /* without AAI system prompt */;
   lastUserText?: string;
+  // Something was already said aloud (assistant text) after the other party's last turn.
+  answeredSinceUser?: boolean;
 }
 
 export const CALL_TAG_RE: RegExp = /\[\[carryover-call:([a-z0-9-]{8,40})\]\]/;
@@ -124,12 +126,14 @@ export function parseBrainRequest(body: unknown): ParsedBrainRequest {
   const lastToolName = lastRole === 'tool' ? toolNameFor(history, lastIdx, notices) : undefined;
 
   let lastUserText: string | undefined;
+  let answeredSinceUser = false;
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (m?.role === 'user' && typeof m.content === 'string') {
       lastUserText = m.content;
       break;
     }
+    if (m?.role === 'assistant' && m.content?.trim()) answeredSinceUser = true;
   }
 
   const out: ParsedBrainRequest = { lastRole, history };
@@ -137,5 +141,6 @@ export function parseBrainRequest(body: unknown): ParsedBrainRequest {
   if (relayNonce) out.relayNonce = relayNonce;
   if (lastToolName) out.lastToolName = lastToolName;
   if (lastUserText !== undefined) out.lastUserText = lastUserText;
+  if (answeredSinceUser) out.answeredSinceUser = true;
   return out;
 }

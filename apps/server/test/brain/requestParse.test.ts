@@ -93,6 +93,48 @@ describe('parseBrainRequest edge cases', () => {
     expect(p.lastUserText).toBe('Wait, stop.');
   });
 
+  it('answeredSinceUser: assistant text after the last other-party turn (not a bare tool call)', () => {
+    const toolOnly = parseBrainRequest({
+      messages: [
+        sys('x'),
+        { role: 'user', content: 'Ready Thursday, reference 4471. Anything else?' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'c1', type: 'function', function: { name: 'note_commitment' } }],
+        },
+        { role: 'tool', tool_call_id: 'c1', content: '{"status":"noted"}' },
+        sys("The function call note_commitment(text='x') has just completed."),
+      ],
+    });
+    expect(toolOnly.lastToolName).toBe('note_commitment');
+    expect(toolOnly.answeredSinceUser).toBeUndefined();
+
+    const spoke = parseBrainRequest({
+      messages: [
+        sys('x'),
+        { role: 'user', content: 'Ready Thursday, reference 4471. Anything else?' },
+        { role: 'assistant', content: 'Great, thank you. That is all.' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'c1', type: 'function', function: { name: 'note_commitment' } }],
+        },
+        { role: 'tool', tool_call_id: 'c1', content: '{"status":"noted"}' },
+      ],
+    });
+    expect(spoke.answeredSinceUser).toBe(true);
+
+    const earlier = parseBrainRequest({
+      messages: [
+        sys('x'),
+        { role: 'assistant', content: 'Hi.' },
+        { role: 'user', content: 'Hello?' },
+      ],
+    });
+    expect(earlier.answeredSinceUser).toBeUndefined();
+  });
+
   it('prefers an explicit tool name and falls back to the AAI notice text', () => {
     const named = parseBrainRequest({
       messages: [sys('x'), { role: 'tool', content: '{}', name: 'press_keys' }],

@@ -9,6 +9,9 @@
 //
 //   tsx scripts/watch-call.ts --line ABC123 --autonomy relay --name "Alex"
 //
+// --answer "<text>" plays the user: every ask card is answered with that text after
+// --answer-delay ms (default 2500, typing time). --max-seconds N hangs up after N s.
+//
 // Ctrl+C sends a hangup command and closes the socket.
 import type {
   AppEvent,
@@ -121,6 +124,22 @@ async function main(): Promise<void> {
   const wsBase = base.replace(/^http/, 'ws');
   const ws = new WebSocket(`${wsBase}/ws/app?callId=${callId}&token=${appToken}`);
 
+  const answer = args.answer;
+  const answerDelayMs = Number(args['answer-delay'] ?? 2500);
+  const send = (cmd: unknown) => {
+    try {
+      ws.send(JSON.stringify(cmd));
+    } catch {
+      // socket may already be gone
+    }
+  };
+  if (args['max-seconds']) {
+    setTimeout(() => {
+      console.log(`[${elapsed(t0)}] --max-seconds reached, hanging up`);
+      send({ t: 'hangup' });
+    }, Number(args['max-seconds']) * 1000).unref();
+  }
+
   ws.on('open', () => console.log(`[${elapsed(t0)}] app socket open`));
   ws.on('message', (data) => {
     let ev: AppEvent;
@@ -131,6 +150,13 @@ async function main(): Promise<void> {
       return;
     }
     console.log(`[${elapsed(t0)}] ${describe(ev)}`);
+    if (ev.t === 'ask' && answer) {
+      const askId = ev.askId;
+      setTimeout(() => {
+        console.log(`[${elapsed(t0)}] answering ask ${askId}: ${answer}`);
+        send({ t: 'answer', askId, text: answer });
+      }, answerDelayMs).unref();
+    }
   });
   ws.on('close', (code, reason) => {
     console.log(`[${elapsed(t0)}] app socket closed (${code} ${reason.toString('utf8')})`);

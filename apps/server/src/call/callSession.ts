@@ -21,6 +21,7 @@ import { FrameAggregator } from '../audio/pacer.js';
 import { createLedger, type ExtractedFact, type FactLedger } from '../brain/factGate.js';
 import { type BrainCallView, RELAY_TOOLS } from '../brain/policy.js';
 import type { Config } from '../config.js';
+import { type DebugLog, debugLogFor } from '../debugLog.js';
 import type { PhoneLeg } from '../legs/phoneLeg.js';
 import type { LlmProvider } from '../llm/provider.js';
 import { LineStateTracker, spokenName } from './lineState.js';
@@ -42,7 +43,15 @@ import { summarize } from './summary.js';
 
 export type VoiceAgentLike = Pick<
   VoiceAgentSession,
-  'sessionId' | 'connect' | 'updateSession' | 'sendAudio' | 'replyCreate' | 'toolResult' | 'end'
+  | 'sessionId'
+  | 'resumable'
+  | 'connect'
+  | 'resume'
+  | 'updateSession'
+  | 'sendAudio'
+  | 'replyCreate'
+  | 'toolResult'
+  | 'end'
 >;
 export type CaptionsLike = Pick<
   CaptionsStream,
@@ -61,6 +70,7 @@ export interface CallDeps {
   makeCaptions: (o: CaptionsOptions) => CaptionsLike;
   now?: () => number;
   log?: (msg: string, detail?: unknown) => void;
+  debug?: DebugLog; // timing lines; default: stderr when cfg.debug
 }
 
 export interface OpenAsk {
@@ -82,9 +92,39 @@ const WORDS_RECENT_MS = 1500; // captions words this recent mean loud audio is s
 const VA_SPEECH_MAX_MS = 20_000; // input.speech.started without stopped is trusted this long
 const REPLY_ACK_MS = 3000; // reply.create → reply.started, else the create was lost
 const REPLY_STALL_MS = 20_000; // a reply silent for this long is treated as over
+// AAI answers each turn of the other party with a reply of its own (the Brain makes it
+// silent while typed text waits) and commits it ~1.3 s after their speech stops. A
+// reply.create sent before that is merged into the turn's reply and cut off when AAI
+// commits it (live: the disclosure was cut to half a second and the call stalled), so
+// relays wait for that reply to finish: at most this long after it started or after
+// their last speech event, in case reply.done never comes.
+const TURN_SETTLE_MAX_MS = 3000;
 const END_DRAIN_MAX_MS = 15_000; // end_call: longest wait for the goodbye to play out
+// end_call in a reply the other party talked over ("okay, bye!"): the hang-up was decided
+// and part of the goodbye was heard, so the call still ends, this long after the cut.
+const END_AFTER_INTERRUPT_MS = 1500;
 const DISCLOSURE_REARM_MS = 10_000; // human → voicemail this fast: the "person" was a recording
 const REPEAT_PRESS_MS = 5000; // the same press_keys again this soon is a re-press, skipped
+// A Voice Agent socket that drops mid-call is resumed (AAI keeps the session 30 s): one
+// attempt after each delay, then the call ends. At most this many drops per call.
+const VA_RESUME_DELAYS_MS = [500, 2000];
+const VA_MAX_RESUMES = 3;
+const VA_RECONNECTING_MESSAGE = 'Reconnecting voice…';
+const VA_RECONNECTED_MESSAGE = 'Voice reconnected.';
+// Turn-taking from the inbound level. Caption partials arrive ~1.3 s apart while someone
+// talks and the Voice Agent's speech events trail the audio by 0.4-1.6 s (live run), so
+// between them a talking person can look quiet. The level is live.
+const SPEECH_DBFS = -40; // an inbound chunk louder than this is someone making sound
+// Sound this recent means they are still talking. Together with the polite queue's 700 ms
+// clear window a turn is over after 1.5 s of quiet: speakers pause ~1.2 s between two
+// sentences of one turn (measured live), and must not be cut into there.
+const SOUND_HANGOVER_MS = 800;
+// The level is trusted when it heard their latest words: the last caption / Voice Agent
+// speech event came at most this long after the last sound, and words were heard lately
+// (steady noise without words is not speech). Otherwise the events decide, as before.
+const SOUND_EVENT_LAG_MS = 2500;
+const SOUND_WORDS_MS = 5000;
+const THEM_AUDIO_OFF_MS = 300; // debug timeline: quiet this long is "audio off"
 const MAX_FACTS = 40;
 const MAX_KEYTERMS = 20;
 const MAX_KEYTERM_CHARS = 50;
@@ -117,6 +157,15 @@ interface PendingToolResult {
 
 type RelayKind = 'relay' | 'disclosure';
 
+// Timing of one relayed utterance, for the debug timeline.
+interface RelayTiming {
+  kind: RelayKind;
+  queuedAt: number;
+  sentAt?: number;
+  takenAt?: number;
+  replyId?: string;
+}
+
 export class CallSession {
   readonly id: string;
   readonly appToken: string;
@@ -129,6 +178,7 @@ export class CallSession {
   private readonly deps: CallDeps;
   private readonly now: () => number;
   private readonly log: (msg: string, detail?: unknown) => void;
+  private readonly debug: DebugLog;
   private readonly facts: Fact[];
   private readonly ledger: FactLedger;
   private readonly speakers = new SpeakerMap();
@@ -145,7 +195,15 @@ export class CallSession {
   private readonly nonceKinds = new Map<string, RelayKind>();
   private readonly spokenRelays: { text: string; kind: RelayKind }[] = [];
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  // Pending wait() calls; the call ending settles them at once.
+  private readonly waits = new Set<() => void>();
   private readonly interruptedReplies = new Set<string>();
+  private readonly relayTimings = new Map<string, RelayTiming>();
+  private readonly repliesWithAudio = new Set<string>();
+  private readonly replyAudioBytes = new Map<string, number>();
+  private lastBlocker = '';
+  private themLoudAt: number | undefined;
+  private themQuietSince: number | undefined;
   private resolveFinished: (s: CallSummary) => void = () => undefined;
 
   private autonomyValue: Autonomy;
@@ -160,6 +218,8 @@ export class CallSession {
   // Events from a Voice Agent / captions socket that never finished connecting are the
   // connect's failure, handled by start()'s catch, not a call-ending event.
   private vaConnected = false;
+  private vaReconnecting = false;
+  private vaResumes = 0;
   private captionsConnected = false;
   private disclosureQueued = false;
   private disclosureRearmed = false;
@@ -172,17 +232,20 @@ export class CallSession {
   private lastPartialAt = Number.NEGATIVE_INFINITY;
   private lastThemAt = Number.NEGATIVE_INFINITY;
   private lastWordsAt = Number.NEGATIVE_INFINITY;
+  private lastSoundAt = Number.NEGATIVE_INFINITY;
   private awaitingReplyUntil = 0;
   private replyInFlight: string | undefined;
   private replyHasAudio = false;
   private ownReplyId: string | undefined;
   private lastReplyEventAt = 0;
+  private replyStartedAt = 0;
+  private lastVaSpeechEventAt = 0;
 
   // Tool bookkeeping: results go out when reply.done is the latest reply event.
   private lastVaEvent: 'reply.started' | 'reply.done' | 'input.speech.started' = 'reply.done';
   private pendingTools: PendingToolResult[] = [];
   private pendingDtmf: { digits: string; replyId: string }[] = [];
-  private endAfterReply: { replyId?: string; readyAt?: number } | undefined;
+  private endAfterReply: { replyId?: string; readyAt?: number; notBefore?: number } | undefined;
   private toolLoopDepth = 0;
   private lastPress: { digits: string; at: number } | undefined;
   private lastThemPerson: number | undefined;
@@ -197,6 +260,7 @@ export class CallSession {
     this.now = deps.now ?? Date.now;
     this.log =
       deps.log ?? ((msg, detail) => console.warn(`[call ${this.id}] ${msg}`, detail ?? ''));
+    this.debug = deps.debug ?? debugLogFor(deps.cfg);
     this.startedAt = this.now();
     this.stateSince = this.startedAt;
     this.autonomyValue = req.autonomy;
@@ -212,8 +276,9 @@ export class CallSession {
       {
         themSpeaking: () => this.themSpeaking(),
         agentSpeaking: () => this.agentSpeaking(),
-        msSinceThemAudio: () => this.now() - this.lastThemAt,
-        ready: () => this.connectedAt !== undefined && !this.ending,
+        msSinceThemAudio: () => this.msSinceThemAudio(),
+        ready: () => this.connectedAt !== undefined && !this.ending && !this.vaReconnecting,
+        settling: () => this.turnSettling(),
       },
       (nonce, text) => this.speakRelay(nonce, text),
       (ev) => this.emit({ t: 'relay.queued', ...ev }),
@@ -286,6 +351,7 @@ export class CallSession {
       if (this.ending) return;
 
       this.connectedAt = this.now();
+      this.debug('call.connected', { call: this.id.slice(0, 8), leg: this.leg.kind });
       this.line.force('connecting');
       if (this.leg.kind === 'line') {
         // The practice line is always a person; don't wait for a pickup heuristic.
@@ -332,6 +398,8 @@ export class CallSession {
     const endedAt = this.now();
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
+    // Anything awaiting a wait() (the resume backoff) resumes now and sees the call ending.
+    for (const done of [...this.waits]) done();
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = undefined;
     this.out?.stop();
@@ -449,6 +517,7 @@ export class CallSession {
     switch (cmd.t) {
       case 'say': {
         const nonces = this.queue.push(cmd.text, cmd.urgent === true);
+        this.trackRelay(nonces, 'relay');
         if (nonces.length === 0) {
           this.emit({ t: 'error', message: 'Nothing to say: the message is empty.' });
           return;
@@ -505,7 +574,9 @@ export class CallSession {
       return;
     }
     // The other party is waiting for this answer: it does not wait for a pause.
-    if (this.queue.push(text, true).length === 0) {
+    const nonces = this.queue.push(text, true);
+    this.trackRelay(nonces, 'relay');
+    if (nonces.length === 0) {
       this.emit({ t: 'error', message: 'Nothing to say: the answer is empty.' });
       return;
     }
@@ -555,9 +626,16 @@ export class CallSession {
   private takeNonce(nonce: string): string | undefined {
     const text = this.queue.take(nonce);
     if (text === undefined) return undefined;
+    this.awaitingReplyUntil = 0; // acknowledged: the reply in flight now is ours
     const kind = this.nonceKinds.get(nonce) ?? 'relay';
     this.nonceKinds.delete(nonce);
     if (this.replyInFlight !== undefined) this.ownReplyId = this.replyInFlight;
+    const timing = this.relayTimings.get(nonce);
+    if (timing) {
+      timing.takenAt = this.now();
+      timing.replyId = this.replyInFlight;
+    }
+    this.debug('relay.taken', { nonce, reply: this.replyInFlight });
     this.spokenRelays.push({ text, kind });
     if (this.spokenRelays.length > 10) this.spokenRelays.shift();
     this.emit({ t: 'relay.spoken', nonce, at: this.now() });
@@ -588,6 +666,7 @@ export class CallSession {
   private onVaEvent(e: VAEvent): void {
     if (this.ending) return;
     const now = this.now();
+    this.debugVaEvent(e, now);
     switch (e.type) {
       case 'session.ready':
         // Per-call routing: every Brain request carries this tag in messages[0].
@@ -597,10 +676,13 @@ export class CallSession {
         const id = str(e.reply_id) ?? 'unknown';
         this.replyInFlight = id;
         this.replyHasAudio = false;
-        // The reply our reply.create asked for.
+        // Probably the reply our reply.create asked for. The ack window stays open until the
+        // Brain takes our nonce: AAI may start a reply of its own first (live: a post-tool
+        // reply started 60 ms after our reply.create, took the ack, and the next urgent
+        // utterance was sent over ours and cut it).
         if (now < this.awaitingReplyUntil) this.ownReplyId = id;
         this.lastReplyEventAt = now;
-        this.awaitingReplyUntil = 0;
+        this.replyStartedAt = now;
         this.lastVaEvent = 'reply.started';
         return;
       }
@@ -626,11 +708,13 @@ export class CallSession {
         this.vaSpeechActive = true;
         this.vaSpeechAt = now;
         this.lastThemAt = now;
+        this.lastVaSpeechEventAt = now;
         this.lastVaEvent = 'input.speech.started';
         return;
       case 'input.speech.stopped':
         this.vaSpeechActive = false;
         this.lastThemAt = now;
+        this.lastVaSpeechEventAt = now;
         return;
       case 'transcript.user':
         // The Voice Agent's own transcript of the other party. Not evidence for the gate
@@ -638,6 +722,7 @@ export class CallSession {
         // but it does mean they spoke, which ends a tool loop.
         this.vaSpeechActive = false;
         this.lastThemAt = now;
+        this.lastVaSpeechEventAt = now;
         if (str(e.text)?.trim()) this.toolLoopDepth = 0;
         return;
       case 'session.error':
@@ -651,8 +736,52 @@ export class CallSession {
 
   private onVaClose(code: number, reason: string): void {
     // Before connect() resolved, a close is the connect failing: start() rejects for it.
-    if (this.ending || !this.vaConnected) return;
+    // While resuming, a failed attempt's socket closing is that attempt's failure.
+    if (this.ending || !this.vaConnected || this.vaReconnecting) return;
     this.log('voice agent socket closed', { code, reason });
+    this.debug('va.closed', { code });
+    // A clean close (1000) is the server ending the session; anything else is a drop.
+    if (code !== 1000 && this.va?.resumable && this.vaResumes < VA_MAX_RESUMES) {
+      void this.resumeVa();
+      return;
+    }
+    void this.end('voice-agent-closed');
+  }
+
+  // The Voice Agent socket dropped: resume the same session on a new socket so the call
+  // (and AAI's conversation context) carries on. Meanwhile the other party's audio is
+  // dropped, not buffered (a burst of stale audio would confuse turn-taking), typed text
+  // waits, and whatever reply was in flight is treated as over.
+  private async resumeVa(): Promise<void> {
+    const va = this.va;
+    if (!va) return;
+    this.vaResumes++;
+    this.vaReconnecting = true;
+    if (this.replyInFlight !== undefined) this.recoverStalledReply(this.now());
+    this.awaitingReplyUntil = 0;
+    this.emit({ t: 'error', message: VA_RECONNECTING_MESSAGE });
+    for (const delay of VA_RESUME_DELAYS_MS) {
+      await this.wait(delay);
+      if (this.ending) return;
+      const startedAt = this.now();
+      try {
+        await va.resume();
+      } catch (err) {
+        this.log('voice agent resume failed', err);
+        this.debug('va.resume_failed', { ms: this.now() - startedAt });
+        if (this.ending) return;
+        continue;
+      }
+      if (this.ending) return;
+      this.vaReconnecting = false;
+      this.debug('va.resumed', { ms: this.now() - startedAt });
+      this.emit({ t: 'error', message: VA_RECONNECTED_MESSAGE });
+      // Typed text sent into the dead socket was never spoken: say it now.
+      this.queue.requeueUnspoken();
+      this.queue.tick(this.now());
+      return;
+    }
+    this.vaReconnecting = false;
     void this.end('voice-agent-closed');
   }
 
@@ -699,7 +828,10 @@ export class CallSession {
       // Only this reply's unplayed speech: queued tones and other audio keep going.
       this.out?.dropReply(id);
       this.pendingTools = this.pendingTools.filter((t) => t.replyId !== id);
-      if (this.endAfterReply?.replyId === id) this.endAfterReply = undefined;
+      // The hang-up stands: without it the call would sit open until the time limit.
+      if (this.endAfterReply && this.endAfterReply.replyId === id) {
+        this.endAfterReply = { readyAt: now, notBefore: now + END_AFTER_INTERRUPT_MS };
+      }
     } else {
       this.out?.padToChunk(id);
       if (this.endAfterReply && this.endAfterReply.replyId === id) this.endAfterReply.readyAt = now;
@@ -755,6 +887,7 @@ export class CallSession {
         const question = str(args.question)?.trim();
         if (!question) return fail('question is required');
         const field = str(args.field)?.trim() || undefined;
+        if (this.askAlreadyOpen(question, field)) return ok({ status: 'already_asked_user' });
         const from = this.lastThemLabel();
         this.createAsk(question, field, `${from} asks: ${question}`);
         return ok({ status: 'asked_user' });
@@ -765,6 +898,7 @@ export class CallSession {
         const fact = this.facts.find((f) => f.key === field);
         if (fact) return ok({ value: fact.value });
         const question = `They're asking for your ${humanizeKey(field)}.`;
+        if (this.askAlreadyOpen(question, field)) return ok({ status: 'already_asked_user' });
         this.createAsk(question, field, question);
         return ok({ status: 'not_shared_asking_user' });
       }
@@ -784,10 +918,17 @@ export class CallSession {
         this.line.force(state);
         return ok({ status: 'ok', state });
       }
-      case 'end_call':
-        // After the goodbye in this reply has played out (see tick()).
-        this.endAfterReply = replyId !== undefined ? { replyId } : { readyAt: now };
+      case 'end_call': {
+        // After the goodbye in this reply has played out (see tick()). A repeated end_call
+        // never pushes an end already on its way back: the earliest deadline wins (an
+        // armed one -- e.g. the grace after an interrupted goodbye -- over a new reply's).
+        const next = replyId !== undefined ? { replyId } : { readyAt: now };
+        const cur = this.endAfterReply;
+        if (!cur || (cur.readyAt === undefined && next.readyAt !== undefined)) {
+          this.endAfterReply = next;
+        }
         return ok({ status: 'ending' });
+      }
       default:
         return fail(`unknown tool ${name}`);
     }
@@ -842,8 +983,9 @@ export class CallSession {
   // Each sink on its own: a failing captions socket must not starve the Voice Agent.
   private onInboundChunk(chunk: Buffer): void {
     const now = this.now();
+    const level = rmsDbfs(chunk);
     try {
-      this.va?.sendAudio(chunk);
+      if (!this.vaReconnecting) this.va?.sendAudio(chunk);
     } catch (err) {
       this.log('voice agent audio send failed', err);
     }
@@ -853,10 +995,34 @@ export class CallSession {
       this.log('captions audio send failed', err);
     }
     try {
-      this.line.onAudioLevel(rmsDbfs(chunk), now - this.lastWordsAt < WORDS_RECENT_MS, now);
+      this.line.onAudioLevel(level, now - this.lastWordsAt < WORDS_RECENT_MS, now);
     } catch (err) {
       this.log('audio level check failed', err);
     }
+    if (level > SPEECH_DBFS) this.lastSoundAt = now;
+    this.debugThemAudio(level, now);
+  }
+
+  // Debug timeline only: when the other side's audio goes loud / quiet, which is close to
+  // the real start / end of their speech (AAI's own end-of-speech comes ~0.7 s later).
+  private debugThemAudio(dbfs: number, now: number): void {
+    if (dbfs > SPEECH_DBFS) {
+      if (this.themLoudAt === undefined) {
+        this.themLoudAt = now;
+        this.debug('them.audio_on', { dbfs: Math.round(dbfs) });
+      }
+      this.themQuietSince = undefined;
+      return;
+    }
+    if (this.themLoudAt === undefined) return;
+    this.themQuietSince ??= now;
+    if (now - this.themQuietSince < THEM_AUDIO_OFF_MS) return;
+    this.debug('them.audio_off', {
+      quiet_since: this.themQuietSince,
+      loud_ms: this.themQuietSince - this.themLoudAt,
+    });
+    this.themLoudAt = undefined;
+    this.themQuietSince = undefined;
   }
 
   // ------------------------------------------------------------------ captions
@@ -866,6 +1032,7 @@ export class CallSession {
     const now = this.now();
     const text = turn.text.trim();
     this.lastThemAt = now;
+    this.debug('cap.turn', { order: turn.turnOrder, final: turn.final, len: text.length });
 
     if (!turn.final) {
       this.lastPartialAt = now;
@@ -923,6 +1090,7 @@ export class CallSession {
     const now = this.now();
     this.lastPartialAt = now;
     this.lastThemAt = now;
+    this.debug('cap.speech_started');
   }
 
   private onCaptionsError(e: Error): void {
@@ -938,6 +1106,7 @@ export class CallSession {
   private onLineStateChange(from: LineState, to: LineState): void {
     const now = this.now();
     this.stateSince = now;
+    this.debug('line.state', { from, to });
     this.emit(this.stateEvent());
     if (to === 'ended') return;
     if (
@@ -983,6 +1152,7 @@ export class CallSession {
     if (this.disclosureQueued || this.ending || this.connectedAt === undefined) return;
     this.disclosureQueued = true;
     const nonces = this.queue.push(disclosureText(this.req.userName, this.req.userDescriptor));
+    this.trackRelay(nonces, 'disclosure');
     this.disclosureNonces = nonces;
     for (const n of nonces) this.nonceKinds.set(n, 'disclosure');
   }
@@ -1003,9 +1173,34 @@ export class CallSession {
   // ------------------------------------------------------------------ turn-taking
 
   private themSpeaking(): boolean {
+    return this.themTalking(this.now()) !== undefined;
+  }
+
+  // Why the other party counts as talking right now (undefined: they are not).
+  private themTalking(now: number): 'sound' | 'va-speech' | 'caption-partial' | undefined {
+    if (this.soundTrusted(now)) {
+      if (now - this.lastSoundAt < SOUND_HANGOVER_MS) return 'sound';
+    } else if (this.vaSpeechActive && now - this.vaSpeechAt < VA_SPEECH_MAX_MS) {
+      return 'va-speech';
+    }
+    return now - this.lastPartialAt < PARTIAL_SPEAKING_MS ? 'caption-partial' : undefined;
+  }
+
+  // How long they have been quiet. From the level when it is trusted (a final caption
+  // arriving ~1 s after the words is not new speech), else from their last speech event.
+  private msSinceThemAudio(): number {
     const now = this.now();
-    if (this.vaSpeechActive && now - this.vaSpeechAt < VA_SPEECH_MAX_MS) return true;
-    return now - this.lastPartialAt < PARTIAL_SPEAKING_MS;
+    if (this.soundTrusted(now)) return now - (this.lastSoundAt + SOUND_HANGOVER_MS);
+    return now - this.lastThemAt;
+  }
+
+  // Hold music is sound too, but not speech.
+  private soundTrusted(now: number): boolean {
+    return (
+      this.line.state !== 'hold' &&
+      now - this.lastWordsAt < SOUND_WORDS_MS &&
+      this.lastThemAt - this.lastSoundAt <= SOUND_EVENT_LAG_MS
+    );
   }
 
   // The agent is audibly busy: our reply.create is on its way, our own reply is in flight,
@@ -1019,8 +1214,25 @@ export class CallSession {
     return this.outBusy();
   }
 
+  // AAI is still on the other party's turn: its VAD still hears them (it trails the audio
+  // by up to ~1.7 s, and when it catches up it commits the turn, ending whatever reply is
+  // playing -- live: a disclosure sent 0.2 s before AAI's speech.stopped got 0 ms of
+  // audio), or its reply to that turn (not ours, no sound) is still open.
+  private turnSettling(): boolean {
+    const now = this.now();
+    if (this.vaSpeechActive && now - this.vaSpeechAt < VA_SPEECH_MAX_MS) return true;
+    const r = this.replyInFlight;
+    if (r === undefined || r === this.ownReplyId || this.replyHasAudio) return false;
+    const since = Math.max(this.replyStartedAt, this.lastVaSpeechEventAt);
+    return now - since < TURN_SETTLE_MAX_MS;
+  }
+
   private speakRelay(nonce: string, _text: string): void {
-    this.awaitingReplyUntil = this.now() + REPLY_ACK_MS;
+    const now = this.now();
+    this.awaitingReplyUntil = now + REPLY_ACK_MS;
+    const timing = this.relayTimings.get(nonce);
+    if (timing) timing.sentAt = now;
+    this.debug('relay.sent', { nonce, reply_in_flight: this.replyInFlight });
     this.va?.replyCreate(`RELAY_UTTERANCE:${nonce}`);
   }
 
@@ -1030,9 +1242,15 @@ export class CallSession {
     if (this.replyInFlight !== undefined && now - this.lastReplyEventAt > REPLY_STALL_MS) {
       this.recoverStalledReply(now);
     }
+    this.debugQueueBlocker(now);
     this.queue.tick(now);
-    const readyAt = this.endAfterReply?.readyAt;
-    if (readyAt !== undefined && (!this.outBusy() || now - readyAt > END_DRAIN_MAX_MS)) {
+    const ending = this.endAfterReply;
+    const readyAt = ending?.readyAt;
+    if (
+      readyAt !== undefined &&
+      now >= (ending?.notBefore ?? readyAt) &&
+      (!this.outBusy() || now - readyAt > END_DRAIN_MAX_MS)
+    ) {
       void this.end('agent-ended');
     }
   }
@@ -1054,7 +1272,112 @@ export class CallSession {
     this.flushToolResults();
   }
 
+  // ------------------------------------------------------------------ debug timeline
+
+  private trackRelay(nonces: string[], kind: RelayKind): void {
+    const now = this.now();
+    for (const nonce of nonces) {
+      if (this.relayTimings.has(nonce)) continue; // "speak now" for text already queued
+      this.relayTimings.set(nonce, { kind, queuedAt: now });
+      this.debug('relay.queued', { nonce, kind });
+    }
+    while (this.relayTimings.size > 50) {
+      const oldest = this.relayTimings.keys().next().value;
+      if (oldest === undefined) break;
+      this.relayTimings.delete(oldest);
+    }
+  }
+
+  private debugVaEvent(e: VAEvent, now: number): void {
+    if (e.type === 'reply.audio') {
+      const id = str(e.reply_id) ?? this.replyInFlight ?? '?';
+      if (typeof e.data === 'string') {
+        this.replyAudioBytes.set(id, (this.replyAudioBytes.get(id) ?? 0) + (e.data.length * 3) / 4);
+        if (this.replyAudioBytes.size > 100) {
+          const oldest = this.replyAudioBytes.keys().next().value;
+          if (oldest !== undefined) this.replyAudioBytes.delete(oldest);
+        }
+      }
+      if (this.repliesWithAudio.has(id)) return;
+      this.repliesWithAudio.add(id);
+      if (this.repliesWithAudio.size > 100) {
+        const oldest = this.repliesWithAudio.values().next().value;
+        if (oldest !== undefined) this.repliesWithAudio.delete(oldest);
+      }
+      this.debug('va.first_audio', { reply: id });
+      for (const [nonce, r] of this.relayTimings) {
+        if (r.takenAt === undefined || (r.replyId !== undefined && r.replyId !== id)) continue;
+        this.relayTimings.delete(nonce);
+        this.debug('relay.first_audio', {
+          nonce,
+          kind: r.kind,
+          reply: id,
+          queued_at: r.queuedAt,
+          send_wait_ms: r.sentAt === undefined ? undefined : r.sentAt - r.queuedAt,
+          take_ms: r.sentAt === undefined ? undefined : r.takenAt - r.sentAt,
+          audio_after_send_ms: r.sentAt === undefined ? undefined : now - r.sentAt,
+          total_ms: now - r.queuedAt,
+        });
+      }
+      return;
+    }
+    if (e.type.endsWith('.delta')) return;
+    const replyId = str(e.reply_id);
+    this.debug(`va.${e.type}`, {
+      // μ-law 8 kHz: 8 bytes per ms of speech received for this reply so far.
+      audio_ms:
+        e.type === 'reply.done' && replyId
+          ? Math.round((this.replyAudioBytes.get(replyId) ?? 0) / 8)
+          : undefined,
+      reply: str(e.reply_id),
+      status: str(e.status),
+      name: str(e.name),
+      code: str(e.code),
+      len: typeof e.text === 'string' ? e.text.length : undefined,
+      interrupted: e.interrupted === true ? true : undefined,
+    });
+  }
+
+  // What is holding the head of the polite queue right now (logged on change).
+  private debugQueueBlocker(now: number): void {
+    if (this.queue.waiting === 0) {
+      this.lastBlocker = '';
+      return;
+    }
+    let why: string;
+    const r = this.replyInFlight;
+    if (this.connectedAt === undefined) why = 'not-connected';
+    else if (now < this.awaitingReplyUntil) why = 'agent:ack';
+    else if (r !== undefined && r === this.ownReplyId) why = 'agent:own-reply';
+    else if (r !== undefined && this.replyHasAudio) why = 'agent:reply-audio';
+    else if (this.outBusy()) why = 'agent:audio-playing';
+    else if (this.turnSettling()) why = 'agent:turn-settling';
+    else {
+      const talking = this.themTalking(now);
+      if (talking) why = `them:${talking}`;
+      else if (this.msSinceThemAudio() < 700) why = 'them:clear-window';
+      else why = 'clear';
+    }
+    if (why === this.lastBlocker) return;
+    this.lastBlocker = why;
+    this.debug('queue.blocker', { why, waiting: this.queue.waiting });
+  }
+
   // ------------------------------------------------------------------ helpers
+
+  // One question, one card. While the other party waits, the LLM tends to ask the same
+  // thing again through the other tool (live: share_fact, then ask_user, then share_fact
+  // for one "member ID, please?", three cards, and the answer spoken three times). An
+  // open card for the same field or the same question already covers it.
+  private askAlreadyOpen(question: string, field: string | undefined): boolean {
+    const q = askKey(question);
+    const f = field ? askKey(field) : undefined;
+    for (const card of this.asks.values()) {
+      if (askKey(card.question) === q) return true;
+      if (f && card.field && askKey(card.field) === f) return true;
+    }
+    return false;
+  }
 
   private createAsk(question: string, field: string | undefined, alertMessage: string): void {
     const now = this.now();
@@ -1141,6 +1464,20 @@ export class CallSession {
     return out.slice(0, MAX_KEYTERMS);
   }
 
+  // Resolves after `ms`, or as soon as the call ends (then `ending` is true): an async
+  // path awaiting it never hangs on a timer that finish() cleared.
+  private wait(ms: number): Promise<void> {
+    if (this.ending) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        this.waits.delete(done);
+        resolve();
+      };
+      this.waits.add(done);
+      this.armTimer(done, ms);
+    });
+  }
+
   private armTimer(fn: () => void, ms: number): ReturnType<typeof setTimeout> {
     const t = setTimeout(() => {
       this.timers.delete(t);
@@ -1190,6 +1527,10 @@ function toolArgs(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
     ? (v as Record<string, unknown>)
     : {};
+}
+
+function askKey(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
 function humanizeKey(key: string): string {
