@@ -1,0 +1,26 @@
+{
+  "scenarioId": "riverside-pharmacy",
+  "autonomy": "assist",
+  "goal": "Refill my lisinopril prescription and find out when it will be ready",
+  "user": { "name": "Maya Chen", "descriptor": "deaf" },
+  "consentedFacts": [
+    { "key": "full_name", "label": "Full name", "value": "Maya Chen" },
+    { "key": "dob", "label": "Date of birth", "value": "March 14, 1952" }
+  ],
+  "privateFacts": [],
+  "expect": {
+    "ivrDigits": "2",
+    "asks": [],
+    "newSpeaker": false,
+    "forbiddenInAgentSpeech": [],
+    "mustSayAfterAnswer": []
+  },
+  "userScript": [
+    {
+      "trigger": { "type": "ask", "onAsk": "prescription" },
+      "answerWith": "Lisinopril, yes.",
+      "via": "answer",
+      "afterMs": 2000
+    }
+  ]
+}

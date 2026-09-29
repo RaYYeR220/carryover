@@ -1,0 +1,26 @@
+{
+  "scenarioId": "city-clinic-voicemail",
+  "autonomy": "assist",
+  "goal": "Leave a message asking the clinic to call me back about my blood test results",
+  "user": { "name": "Maya Chen", "descriptor": "deaf" },
+  "consentedFacts": [
+    { "key": "full_name", "label": "Full name", "value": "Maya Chen" },
+    { "key": "dob", "label": "Date of birth", "value": "March 14, 1952" }
+  ],
+  "privateFacts": [],
+  "expect": {
+    "asks": [],
+    "newSpeaker": false,
+    "forbiddenInAgentSpeech": [],
+    "mustSayAfterAnswer": []
+  },
+  "userScript": [
+    {
+      "trigger": { "type": "alert", "kind": "voicemail" },
+      "answerWith": "Hi, this is Maya Chen, date of birth March 14th, 1952. Please call me back about my blood test results. Thank you.",
+      "via": "say",
+      "urgent": true,
+      "afterMs": 1500
+    }
+  ]
+}
