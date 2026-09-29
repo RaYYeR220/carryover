@@ -34,6 +34,11 @@ export interface CreateServerOptions {
   // itself splits the string on commas. `false` disables X-Forwarded-For trust entirely.
   // See defaultTrustProxy() for the default.
   trustProxy?: string | false;
+  // Where to look for the web app's build output (see WEB_DIST above). `null` disables the
+  // SPA entirely (every non-API route 404s); a string overrides the path (e.g. a temp dir
+  // in a test); omitted defaults to WEB_DIST. Distinguishing "omitted" from "null" is why
+  // this isn't just `webDist?: string`.
+  webDist?: string | null;
 }
 
 export interface CreatedServer {
@@ -69,11 +74,23 @@ function defaultCallDeps(cfg: Config): CallDeps {
 // load balancer on a private address (10.x/172.16.x/192.168.x -- "uniquelocal"), not
 // loopback. Trusting only 'loopback' there would make req.ip resolve to the load balancer
 // for every visitor, merging every real caller into one rate-limit bucket. Trust both.
-function defaultTrustProxy(): string | false {
-  const raw = process.env.TRUST_PROXY;
-  if (raw !== undefined && raw !== '') return raw;
+// TRUST_PROXY is a free-form env string (see CreateServerOptions.trustProxy above for what
+// Fastify does with it), but "false"/"0"/"off" and "true" are the common boolean spellings
+// people reach for -- passing the literal string "false" straight to Fastify's trustProxy
+// is truthy (a non-empty string), so it would silently trust every X-Forwarded-For header
+// instead of none, and some Fastify versions throw on an unrecognized string at boot.
+const TRUST_PROXY_FALSE = new Set(['false', '0', 'off']);
+
+export function defaultTrustProxy(env: NodeJS.ProcessEnv = process.env): string | boolean {
+  const raw = env.TRUST_PROXY;
+  if (raw !== undefined && raw !== '') {
+    const lower = raw.trim().toLowerCase();
+    if (TRUST_PROXY_FALSE.has(lower)) return false;
+    if (lower === 'true') return true;
+    return raw;
+  }
   // vitest sets this; tests default to no proxy trust unless a test opts in explicitly.
-  if (process.env.VITEST) return false;
+  if (env.VITEST) return false;
   return 'loopback,linklocal,uniquelocal';
 }
 
@@ -118,9 +135,10 @@ export async function createServer(opts: CreateServerOptions = {}): Promise<Crea
   registerLineSocket(app, { lines });
   registerMcp(app, ctx);
 
-  const hasWebBuild = existsSync(WEB_DIST);
+  const webDist = opts.webDist === undefined ? WEB_DIST : opts.webDist;
+  const hasWebBuild = webDist !== null && existsSync(webDist);
   if (hasWebBuild) {
-    await app.register(fastifyStatic, { root: WEB_DIST, wildcard: false });
+    await app.register(fastifyStatic, { root: webDist as string, wildcard: false });
   }
   app.setNotFoundHandler((req, reply) => {
     const isPage = req.method === 'GET' && !RESERVED_PREFIXES.some((p) => req.url.startsWith(p));
