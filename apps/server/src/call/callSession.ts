@@ -28,7 +28,7 @@ import { LineStateTracker, spokenName } from './lineState.js';
 import { Outbound } from './outbound.js';
 import { PoliteQueue } from './politeQueue.js';
 import { SpeakerMap } from './speakers.js';
-import { summarize } from './summary.js';
+import { SUMMARY_TIMEOUT_MS, summarize } from './summary.js';
 
 // One live call: the other party's phone leg ↔ an AssemblyAI Voice Agent session (ears
 // and mouth; its LLM is our Relay Brain) plus a parallel Universal-3.5 Pro captions stream
@@ -85,8 +85,12 @@ const TICK_MS = 100;
 const ASK_TTL_MS = 90_000;
 const LINE_DISCLOSURE_DELAY_MS = 2500;
 const CLOSE_CAP_MS = 5000;
-const SUMMARY_TIMEOUT_MS = 15_000;
 const HISTORY_LIMIT = 200;
+// Nobody watching (tab closed, SPA navigated away, the POST aborted while the line still
+// rings) leaves a call holding one of the 3 global slots and its AAI sessions for nothing.
+// The client's own reconnect backoff tops out around 6 s, so a page reload/flaky network
+// still recovers comfortably inside this window.
+const NO_VIEWER_END_MS = 45_000;
 const PARTIAL_SPEAKING_MS = 700; // a caption partial this recent means they are talking
 const WORDS_RECENT_MS = 1500; // captions words this recent mean loud audio is speech, not music
 const VA_SPEECH_MAX_MS = 20_000; // input.speech.started without stopped is trusted this long
@@ -188,6 +192,7 @@ export class CallSession {
   private readonly inbound: FrameAggregator;
   private readonly view: BrainCallView;
   private readonly subscribers = new Set<(e: AppEvent) => void>();
+  private noViewerTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly history: AppEvent[] = [];
   private readonly transcriptLog: TranscriptEntry[] = [];
   private readonly commitments: Commitment[] = [];
@@ -458,6 +463,7 @@ export class CallSession {
 
   subscribe(fn: (e: AppEvent) => void): () => void {
     this.subscribers.add(fn);
+    this.clearNoViewerTimer();
     for (const e of [this.stateEvent(), ...this.history]) {
       try {
         fn(e);
@@ -467,7 +473,25 @@ export class CallSession {
     }
     return () => {
       this.subscribers.delete(fn);
+      this.armNoViewerTimer();
     };
+  }
+
+  // Nobody is watching: end the call unless that's expected (still setting up AAI, or the
+  // call already ended some other way). "Watching" starts once the phone is ringing --
+  // before that a viewer dropping off during the brief AAI setup isn't a real abandonment.
+  private armNoViewerTimer(): void {
+    if (this.subscribers.size > 0 || this.ending) return;
+    if (this.connectedAt === undefined && this.line.state !== 'ringing') return;
+    this.clearNoViewerTimer();
+    this.noViewerTimer = this.armTimer(() => void this.end('no-viewer'), NO_VIEWER_END_MS);
+  }
+
+  private clearNoViewerTimer(): void {
+    if (!this.noViewerTimer) return;
+    clearTimeout(this.noViewerTimer);
+    this.timers.delete(this.noViewerTimer);
+    this.noViewerTimer = undefined;
   }
 
   handleCommand(cmd: AppCommand): void {
@@ -1556,6 +1580,7 @@ function endMessage(reason: string): string {
   if (reason === 'max-duration') return 'Call ended: the 5-minute demo limit was reached.';
   if (reason === 'voice-agent-closed') return 'Call ended: the voice connection dropped.';
   if (reason === 'start-failed') return 'Call ended: it could not be started.';
+  if (reason === 'no-viewer') return 'Call ended: nobody was watching.';
   if (reason === 'leg-ended:no-answer') return 'Call ended: no answer.';
   if (reason.startsWith('leg-ended:')) return 'Call ended: the other side hung up.';
   return 'Call ended.';

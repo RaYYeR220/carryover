@@ -15,6 +15,7 @@ export interface SummaryResult {
   commitments: Commitment[];
 }
 
+export const SUMMARY_TIMEOUT_MS = 15_000;
 const FALLBACK_OUTCOME = 'Call ended';
 const MAX_TRANSCRIPT_CHARS = 12_000;
 const MAX_BULLETS = 6;

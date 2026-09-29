@@ -93,7 +93,7 @@ async function setup(opts: SetupOptions = {}) {
   });
   sessions.push(session);
   const events: AppEvent[] = [];
-  session.subscribe((e) => events.push(e));
+  const unsubscribe = session.subscribe((e) => events.push(e));
   if (opts.start !== false) await session.start();
   return {
     session,
@@ -105,6 +105,7 @@ async function setup(opts: SetupOptions = {}) {
     order,
     vaF,
     capF,
+    unsubscribe,
     get va(): FakeVoiceAgent {
       return vaF.last;
     },
@@ -399,7 +400,7 @@ describe('CallSession voice agent resume', () => {
   });
 });
 
-describe('CallSession exit paths (Review Focus 1)', () => {
+describe('CallSession exit paths', () => {
   it('disposes AAI sessions when the leg drops', async () => {
     const { session, leg, va, cap, events } = await setup();
     leg.emitEnded('line-closed');
@@ -494,6 +495,55 @@ describe('CallSession exit paths (Review Focus 1)', () => {
     });
     cap.final(0, 'Hello?', 'A');
     expect(all(events, 'caption')).toHaveLength(1);
+  });
+});
+
+describe('CallSession no-viewer timeout', () => {
+  it('ends the call 45 s after the last viewer leaves once the leg is connected', async () => {
+    const { session, unsubscribe } = await setup();
+    unsubscribe();
+    await advance(44_999);
+    expect(session.ended).toBe(false);
+    await advance(1);
+    expect(session.ended).toBe(true);
+    expect(session.lineState).toBe('ended');
+  });
+
+  it('arms the same timeout while the leg is still ringing, not only once connected', async () => {
+    let resolveStart: (() => void) | undefined;
+    const leg = new FakeLeg({
+      start: () => new Promise<void>((resolve) => (resolveStart = resolve)),
+    });
+    const { session, unsubscribe } = await setup({ start: false, leg });
+    const starting = session.start();
+    await advance(0);
+    expect(session.lineState).toBe('ringing');
+
+    unsubscribe();
+    await advance(44_999);
+    expect(session.ended).toBe(false);
+    await advance(1);
+    expect(session.ended).toBe(true);
+
+    resolveStart?.(); // let start() unwind instead of leaving it stuck mid-await
+    await starting.catch(() => undefined);
+  });
+
+  it('a resubscribe inside the 45 s window cancels the timer and keeps the call alive', async () => {
+    const { session, unsubscribe } = await setup();
+    unsubscribe();
+    await advance(30_000);
+    expect(session.ended).toBe(false);
+    session.subscribe(() => undefined);
+    await advance(30_000); // past the original 45 s deadline
+    expect(session.ended).toBe(false);
+  });
+
+  it('does not arm a timer while there is still a subscriber', async () => {
+    const { session } = await setup();
+    session.subscribe(() => undefined); // a second viewer joins
+    await advance(60_000);
+    expect(session.ended).toBe(false);
   });
 });
 
@@ -1485,7 +1535,7 @@ describe('CallSession practice line', () => {
   });
 });
 
-describe('CallSession hardening (review round 1)', () => {
+describe('CallSession hardening', () => {
   it('a number the other party said unlocks only that whole number; the VA transcript is not evidence', async () => {
     const { session, va, cap } = await setup();
     const ok = (x: string) => checkSentence(x, session.brainView().ledger).ok;
