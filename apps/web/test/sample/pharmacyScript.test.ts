@@ -19,7 +19,7 @@ describe('pharmacyScript', () => {
   it('never fires before the call starts, and ends within SAMPLE_TOTAL_MS', () => {
     for (const se of PHARMACY_SCRIPT) expect(se.t).toBeGreaterThanOrEqual(0);
     expect(SAMPLE_TOTAL_MS).toBe(PHARMACY_SCRIPT.at(-1)?.t);
-    // About 65 s, per the brief.
+    // About 65 s: the scripted Riverside Pharmacy demo call.
     expect(SAMPLE_TOTAL_MS).toBeGreaterThan(55_000);
     expect(SAMPLE_TOTAL_MS).toBeLessThan(80_000);
   });
@@ -40,7 +40,7 @@ describe('pharmacyScript', () => {
     }
   });
 
-  it('has the disclosure and the typed-relay closing line the brief quotes', () => {
+  it('has the disclosure and the typed-relay closing line, quoted verbatim', () => {
     const texts = PHARMACY_SCRIPT.flatMap((se) =>
       se.event.t === 'agent.said' ? [se.event.text] : [],
     );

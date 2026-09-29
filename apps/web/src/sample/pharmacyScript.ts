@@ -83,7 +83,7 @@ function ev(t: number, event: AppEvent): ScriptEvent {
   return { t, event };
 }
 
-/* ---------- script text (item 5 and item 9 are quoted verbatim in the brief) ---------- */
+/* ---------- script text (the disclosure and the closing line are quoted verbatim) ---------- */
 
 const MENU_1 =
   'Thanks for calling Riverside Pharmacy. For store hours, press 1. For prescriptions, press 2.';

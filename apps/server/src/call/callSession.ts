@@ -88,7 +88,7 @@ const CLOSE_CAP_MS = 5000;
 const HISTORY_LIMIT = 200;
 // Nobody watching (tab closed, SPA navigated away, the POST aborted while the line still
 // rings) leaves a call holding one of the 3 global slots and its AAI sessions for nothing.
-// The client's own reconnect backoff tops out around 6 s, so a page reload/flaky network
+// The client's own reconnect backoff tops out at about 6 s, so a page reload/flaky network
 // still recovers comfortably inside this window.
 const NO_VIEWER_END_MS = 45_000;
 const PARTIAL_SPEAKING_MS = 700; // a caption partial this recent means they are talking
@@ -479,7 +479,7 @@ export class CallSession {
 
   // Nobody is watching: end the call unless that's expected (still setting up AAI, or the
   // call already ended some other way). "Watching" starts once the phone is ringing --
-  // before that a viewer dropping off during the brief AAI setup isn't a real abandonment.
+  // before that a viewer dropping off during the short AAI setup isn't a real abandonment.
   private armNoViewerTimer(): void {
     if (this.subscribers.size > 0 || this.ending) return;
     if (this.connectedAt === undefined && this.line.state !== 'ringing') return;

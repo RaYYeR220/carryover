@@ -241,7 +241,7 @@ describe('splitSentences', () => {
   });
 });
 
-describe('fix round 1: spoken separators cannot split an invented number (block)', () => {
+describe('spoken separators cannot split an invented number (blocked)', () => {
   const ledger = createLedger(['March 14, 1952', 'Member ID 88-1204-77', 'maya@example.com']);
   const blocked = [
     'Her member ID is 4... 5... 6... 2.',
@@ -277,7 +277,7 @@ describe('fix round 1: spoken separators cannot split an invented number (block)
   });
 });
 
-describe('fix round 1: ordinary speech is not blocked (pass)', () => {
+describe('ordinary speech with numbers is not blocked', () => {
   const ledger = createLedger(['March 14, 1952', 'Member ID 88-1204-77']);
   const passes = [
     'Does three thirty work for her?',
@@ -312,7 +312,7 @@ describe('fix round 1: ordinary speech is not blocked (pass)', () => {
   });
 });
 
-describe('fix round 1: partial dates without a four-digit year (MINOR d)', () => {
+describe('partial dates without a four-digit year', () => {
   const ledger = createLedger(['March 14, 1952']);
   it('month + two-digit year and numeric month/day are dates', () => {
     expect(extractFacts('June of eighty six').map((f) => f.norm)).toEqual(['1986-06']);
@@ -326,7 +326,7 @@ describe('fix round 1: partial dates without a four-digit year (MINOR d)', () =>
   });
 });
 
-describe('fix round 1: ledger sources (MINOR c)', () => {
+describe('ledger sources: user vs other-party numbers', () => {
   it('user-sourced numbers allow partial read-backs, other-party numbers only whole', () => {
     const l = createLedger([]);
     l.add('Call us back at 555 867 5309.', 'other');
@@ -340,7 +340,7 @@ describe('fix round 1: ledger sources (MINOR c)', () => {
   });
 });
 
-describe('fix round 2: year allowance, 24/7, "a hundred", long separators', () => {
+describe('year allowance, 24/7, "a hundred", and long separators', () => {
   const ledger = createLedger(['March 14, 1952', 'Member ID 88-1204-77']);
   const blocked = [
     'Her account number ends in 2014.',
@@ -380,7 +380,7 @@ describe('fix round 2: year allowance, 24/7, "a hundred", long separators', () =
   });
 });
 
-describe('fix round 3: DOB spoken as individually spelled digits (gate false positive, seen live)', () => {
+describe('DOB spoken as individually spelled digits', () => {
   const ledger = createLedger(['March 14, 1952']);
   it('passes the consented DOB spoken as spelled digits ("March one four, one nine five two")', () => {
     expect(
